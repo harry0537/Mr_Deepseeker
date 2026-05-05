@@ -16,18 +16,24 @@ Zero dependencies. Pure Python stdlib.
 
 ## Install
 
-```bash
-git clone https://github.com/harry0537/Mr_Deepseeker.git
-cp -r Mr_Deepseeker/claude_skill ~/.claude/skills/Mr_Deepseeker
-```
-
-Add your DeepSeek API key (free at [platform.deepseek.com](https://platform.deepseek.com)):
+**Option A — manual (one block, copy-paste)**
 
 ```bash
+git clone https://github.com/harry0537/Mr_Deepseeker.git && \
+cp -r Mr_Deepseeker/claude_skill ~/.claude/skills/Mr_Deepseeker && \
 echo "DEEPSEEK_API_KEY=sk-your-key-here" > ~/.claude/skills/Mr_Deepseeker/.env
 ```
 
-That's it. Restart Claude Code and the skill is live.
+Replace `sk-your-key-here` with your key ([free at platform.deepseek.com](https://platform.deepseek.com)). Restart Claude Code — done.
+
+**Option B — guided installer (prompts for your key)**
+
+```bash
+git clone https://github.com/harry0537/Mr_Deepseeker.git
+cd Mr_Deepseeker && bash install.sh
+```
+
+Copies the skill, asks for your API key interactively, writes the `.env`. Restart Claude Code — done.
 
 ---
 
