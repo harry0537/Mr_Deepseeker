@@ -1,18 +1,30 @@
 # Mr_Deepseeker
 
-**Stop burning Claude session limits on mechanical work.**
+> *"Why pay a surgeon to mop the floor?"*
 
-Mr_Deepseeker offloads code review and boilerplate generation to DeepSeek — a capable, cheap coding model — so your Claude sessions stay focused on the reasoning and architecture work only Claude should be doing.
+Claude is exceptional — and expensive. Every token it spends reviewing boilerplate, generating tests, or auditing files for bugs is a token that could have gone to the reasoning, architecture, and judgment work that only Claude can do well.
 
-Zero dependencies. Pure stdlib. Works standalone or as a [Claude Code](https://claude.ai/code) skill.
+**Mr_Deepseeker routes the mechanical work to DeepSeek instead** — a model purpose-built for code tasks, running at a fraction of the cost — so your Claude sessions go further, last longer, and stay focused on the problems that actually need intelligence.
+
+Zero dependencies. Pure Python stdlib. Runs standalone or drops in as a [Claude Code](https://claude.ai/code) skill.
 
 ---
 
-## The problem
+## The economics
 
-Claude has session limits. Every token spent generating boilerplate, writing tests, reviewing files for bugs, or translating code is a token that could have gone to something harder. DeepSeek is purpose-built for mechanical code tasks and costs a fraction of a cent per call.
+This isn't just convenience. The numbers make the case:
 
-Mr_Deepseeker is the bridge.
+| | Input | Output |
+|---|---|---|
+| **Claude Sonnet** | $3.00 / 1M tokens | $15.00 / 1M tokens |
+| **DeepSeek v3** | $0.27 / 1M tokens | $1.10 / 1M tokens |
+| **Savings** | **11× cheaper** | **13.6× cheaper** |
+
+A full codebase review — 8k tokens in, 2k tokens out — costs **$0.004 with DeepSeek** versus **$0.054 with Claude**. Every review you offload preserves ~10,000 Claude tokens and extends your session before you hit the wall.
+
+Reviewing 7 projects in parallel? That's a $0.03 DeepSeek call versus a $0.38 Claude session burn. **Do it ten times and you've saved yourself the equivalent of a full Claude session** that you can spend on the work that actually moves your project forward.
+
+Mr_Deepseeker is not a replacement for Claude. It's the system that makes Claude last.
 
 ---
 
