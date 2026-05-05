@@ -1,71 +1,77 @@
 ---
 name: Mr_Deepseeker
 description: >
-  DeepSeek-powered code review, debug, and trading brain for the 5-bot algorithmic
-  trading system at /home/aibot/claude/. Use when asked to: review a bot, audit code,
-  debug a bot folder, find bugs, run the trading brain, get live trade decisions,
-  "what should the bots do", "deepseek review", "review all bots", "audit [botname]",
-  "run brain", or "trading brain". Bot registry: alpacalivebot, cdcapp, cdcex,
-  sharesies, renkobot, watchdog, shared.
+  DeepSeek-powered code review, debug, and trading brain for Python projects.
+  Use when asked to: review a project, audit code, debug a folder, find bugs,
+  run the trading brain, get live trade decisions, "what should the bots do",
+  "deepseek review", "review all projects", "audit [name]", "run brain",
+  or "trading brain".
 ---
 
-# DeepSeek Bots Skill
+# Mr_Deepseeker Skill
 
-Two pipelines — both live in `/home/aibot/claude/shared/deepseek.py`.
+Two pipelines — review and brain — both in `mr_deepseeker/deepseek.py`.
+
+## Setup
+
+1. Clone: `git clone https://github.com/yourusername/Mr_Deepseeker`
+2. Copy skill: `cp -r claude_skill ~/.claude/skills/Mr_Deepseeker`
+3. Set `DEEPSEEK_API_KEY` in `.env`
 
 ## Pipeline 1 — Code Review & Debug
 
 ### Run via script (preferred)
 ```bash
-cd /home/aibot/claude
-
-# Review one bot
-python3 /home/aibot/.claude/skills/deepseek-bots/scripts/run_review.py review alpacalivebot
+# Review one project folder
+python scripts/review.py review /path/to/project
 
 # Review with extra focus
-python3 /home/aibot/.claude/skills/deepseek-bots/scripts/run_review.py review cdcex "focus on Kelly sizing bugs"
+python scripts/review.py review /path/to/project "focus on Kelly sizing bugs"
 
-# Review all bots
-python3 /home/aibot/.claude/skills/deepseek-bots/scripts/run_review.py review-all
+# Review all from registry
+python scripts/review.py review-all examples/custom_registry.json
 
-# Review subset
-python3 /home/aibot/.claude/skills/deepseek-bots/scripts/run_review.py review-all alpacalivebot sharesies
+# Raw JSON output
+python scripts/review.py json /path/to/project
+```
 
-# List registered bots
-python3 /home/aibot/.claude/skills/deepseek-bots/scripts/run_review.py list
+### Python API
+```python
+from mr_deepseeker import review_project, review_all
+
+result = review_project("/path/to/project", context="focus on async race conditions")
+for bug in result["bugs"]:
+    print(f"[{bug['severity']}] {bug['file']}:{bug.get('line','')} — {bug['description']}")
 ```
 
 ### Output
 Script prints formatted report. Present to user as-is, then offer to fix critical/high bugs.
 
-### Bot registry
-| Key | Path | Focus |
-|-----|------|-------|
-| `alpacalivebot` | alpacalivebot/ | US stocks, Alpaca API |
-| `cdcapp` | cdcapp/ | Crypto.com App swaps |
-| `cdcex` | cdcex/ | Crypto.com Exchange, Kelly sizing |
-| `sharesies` | sharesies/ | NZ stocks, NZX sessions |
-| `renkobot` | renkobot/ | Renko chart patterns |
-| `watchdog` | watchdog/ | Halt/resume, ghost cleanup |
-| `shared` | shared/ | Shared lib all bots depend on |
-
-To add a new bot: edit `BOT_REGISTRY` dict in `/home/aibot/claude/shared/deepseek.py`.
+### Registry format
+```json
+{
+  "my_bot": {"path": "/abs/path/to/bot", "context": "trading bot, focus on order logic"},
+  "shared":  {"path": "/abs/path/to/shared", "context": "shared library"}
+}
+```
 
 ---
 
 ## Pipeline 2 — Trading Brain
 
-See [references/trading_brain.md](references/trading_brain.md) for full TradingState construction and live data wiring.
+See [references/trading_brain.md](references/trading_brain.md) for full TradingState construction.
 
 ### Quick call (mock state)
 ```python
-import sys, datetime; sys.path.insert(0, "/home/aibot/claude")
-from shared.deepseek import trading_brain, TradingState, BotStatus, BOTS
+import datetime
+from mr_deepseeker import trading_brain, TradingState, BotStatus
+
+BOTS = ["ALPACA", "CDC_EXCH", "SHARESIES"]
 
 state = TradingState(
     timestamp=datetime.datetime.now(datetime.UTC).isoformat(),
-    regime={"regime": "BULL_TREND", "confidence": "HIGH", "deploy_mult": 1.0,
-            "halt_buys": False, "strategy_bias": "momentum"},
+    bots=BOTS,
+    regime={"regime": "BULL_TREND", "confidence": "HIGH", "halt_buys": False},
     macro_signal={"overall": "neutral", "sources": {}},
     signals=[],
     exposure={"total": 0.0, "bot_breakdown": {b: 0.0 for b in BOTS}},
@@ -84,17 +90,14 @@ for bot in result.get("no_action", []):
 ---
 
 ## Notes
-- DeepSeek key auto-loaded from `/home/aibot/claude/.env` (`DEEPSEEK_API_KEY`)
-- `review_all_bots()` runs 3 bots in parallel — allow ~45s for all 7
+- DeepSeek key loaded from `DEEPSEEK_API_KEY` env var (or `.env` in project root)
+- `review_all()` runs up to 3 projects in parallel — allow ~45s for 7 projects
 - Watchdog halted = brain skips DeepSeek entirely, returns HOLD for all bots
 - Bad JSON from brain = safe HOLD returned (no crash, no trades)
-- Missing API key = `EnvironmentError` with clear message at call time
+- Missing API key = `RuntimeError` with clear message at call time
 
-## Delegate chain (deepseek.py → openrouter.py)
-`shared/openrouter.py` tries providers in order — first success wins:
+## LLM fallback chain
 1. **DeepSeek** (`DEEPSEEK_API_KEY`) — primary, cheapest
-2. **Ollama 480b** — local, free, slow (~30s)
-3. **OpenRouter** (`OPENROUTER_API_KEY`) — paid fallback
+2. **Ollama** (local) — free, requires Ollama running locally
+3. **OpenRouter** (`OPENROUTER_API_KEY`) — free tier models
 4. **Groq** (`GROQ_API_KEY`) — fast free tier, rate limited
-
-All four keys live in `/home/aibot/claude/.env`.

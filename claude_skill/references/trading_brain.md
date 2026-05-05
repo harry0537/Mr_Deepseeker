@@ -3,113 +3,82 @@
 ## When to use
 Call `trading_brain()` when the user asks for live trade decisions, "run the brain", "what should the bots do", or wants a decision cycle.
 
+## Building TradingState
+
+```python
+import datetime
+from mr_deepseeker import trading_brain, TradingState, BotStatus
+
+# Define your bots
+BOTS = ["ALPACA", "CDC_APP", "CDC_EXCH", "SHARESIES", "RENKO"]
+
+# Pull regime from your regime engine (or use a static fallback)
+regime = {
+    "regime": "BULL_TREND",     # BULL_TREND | BEAR_TREND | SIDEWAYS | etc.
+    "confidence": "HIGH",        # HIGH | MEDIUM | LOW
+    "deploy_mult": 1.0,          # capital multiplier
+    "halt_buys": False,
+    "strategy_bias": "momentum", # momentum | defensive | neutral
+}
+
+# Pull macro signal from your intel source (or use a static fallback)
+macro_signal = {"overall": "neutral", "sources": {}}
+
+# Pull signals from your signal scanner
+signals = [
+    {"bot": "ALPACA", "ticker": "SPY", "strength": 0.72, "side": "BUY"},
+    {"bot": "CDC_EXCH", "ticker": "BTC-USDT", "strength": 0.65, "side": "BUY"},
+]
+
+# Pull exposure from your tracking layer
+exposure = {
+    "total": 0.35,
+    "bot_breakdown": {b: 0.07 for b in BOTS},
+}
+
+# Pull watchdog state
+watchdog = {"halted": False, "reason": None}
+
+# Build per-bot status
+bot_statuses = {
+    "ALPACA":    BotStatus(available_capital=45000, positions={"SPY": 50}),
+    "CDC_APP":   BotStatus(available_capital=5000),
+    "CDC_EXCH":  BotStatus(available_capital=20000, positions={"BTC-USDT": 0.3}),
+    "SHARESIES": BotStatus(available_capital=8000),
+    "RENKO":     BotStatus(available_capital=10000, last_signal="BUY_ETH"),
+}
+
+state = TradingState(
+    timestamp=datetime.datetime.now(datetime.UTC).isoformat(),
+    bots=BOTS,
+    regime=regime,
+    macro_signal=macro_signal,
+    signals=signals,
+    exposure=exposure,
+    watchdog=watchdog,
+    bot_statuses=bot_statuses,
+)
+
+result = trading_brain(state)
+```
+
 ## Fallback data — when live sources fail
+
 ```python
 # Regime fallback
 try:
-    from shared.regime_builder import get_regime, RegimeInput
-    regime = get_regime(RegimeInput(market="stocks")).to_dict()
+    regime = get_regime_from_your_engine()
 except Exception:
     regime = {"regime": "UNKNOWN", "confidence": "LOW", "deploy_mult": 0.5,
               "halt_buys": True, "strategy_bias": "defensive"}
 
-# Coord fallback
-try:
-    from shared.coord import load_state as load_coord
-    coord = load_coord()
-except Exception:
-    coord = {}
-
-# Exposure fallback
-try:
-    from shared.exposure import SystemExposure
-    exp = SystemExposure.load()
-    exposure = {"total": exp.total, "bot_breakdown": exp.by_bot}
-except Exception:
-    exposure = {"total": 0.0, "bot_breakdown": {b: 0.0 for b in BOTS}}
-
 # Watchdog fallback
+import json, os
 try:
-    import os
-    wstate = json.load(open("/home/aibot/claude/watchdog/state.json")) \
-        if os.path.exists("/home/aibot/claude/watchdog/state.json") \
-        else {"halted": False, "reason": None}
+    watchdog_path = "/path/to/your/watchdog/state.json"
+    watchdog = json.load(open(watchdog_path)) if os.path.exists(watchdog_path) else {"halted": False, "reason": None}
 except Exception:
-    wstate = {"halted": False, "reason": None}
-```
-
-If `trading_brain()` returns unparseable JSON, it now auto-returns `HOLD` for all bots instead of raising.
-
-## Building TradingState
-
-Pull live data from these sources in `/home/aibot/claude/`:
-
-```python
-import sys, datetime
-sys.path.insert(0, "/home/aibot/claude")
-
-from shared.deepseek import trading_brain, TradingState, BotStatus, BOTS
-from shared.regime_builder import get_regime, RegimeInput
-from shared.coord import load_coord          # bot capital + positions
-from shared.exposure import get_exposure     # total exposure float
-```
-
-### Minimal working state (when live data unavailable)
-```python
-state = TradingState(
-    timestamp=datetime.datetime.now(datetime.UTC).isoformat(),
-    regime={"regime": "BULL_TREND", "confidence": "HIGH", "deploy_mult": 1.0,
-            "halt_buys": False, "strategy_bias": "momentum"},
-    macro_signal={"overall": "neutral", "sources": {}},
-    signals=[],  # populate from signal_scanner if available
-    exposure={"total": 0.0, "bot_breakdown": {b: 0.0 for b in BOTS}},
-    watchdog={"halted": False, "reason": None},
-    bot_statuses={b: BotStatus() for b in BOTS},
-)
-result = trading_brain(state)
-```
-
-### Full state with live data
-```python
-# 1. Regime
-from shared.regime_builder import get_regime, RegimeInput
-regime_out = get_regime(RegimeInput(market="stocks"))  # or "crypto"
-regime = regime_out.to_dict()
-
-# 2. Coord (capital + positions per bot)
-from shared.coord import load_state as load_coord
-coord = load_coord()  # returns dict keyed by bot name
-
-# 3. Exposure
-from shared.exposure import SystemExposure
-exp = SystemExposure.load()
-exposure = {"total": exp.total, "bot_breakdown": exp.by_bot}
-
-# 4. Watchdog
-import json
-wstate = json.load(open("/home/aibot/claude/watchdog/state.json")) \
-    if os.path.exists("/home/aibot/claude/watchdog/state.json") \
-    else {"halted": False, "reason": None}
-
-# 5. Assemble
-bot_statuses = {}
-for bot in BOTS:
-    c = coord.get(bot, {})
-    bot_statuses[bot] = BotStatus(
-        available_capital=c.get("cash", 0),
-        positions=c.get("positions", {}),
-    )
-
-state = TradingState(
-    timestamp=datetime.datetime.now(datetime.UTC).isoformat(),
-    regime=regime,
-    macro_signal={"overall": "neutral", "sources": {}},
-    signals=[],
-    exposure=exposure,
-    watchdog=wstate,
-    bot_statuses=bot_statuses,
-)
-result = trading_brain(state)
+    watchdog = {"halted": False, "reason": None}
 ```
 
 ## Output format
