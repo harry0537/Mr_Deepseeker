@@ -97,6 +97,31 @@ def _build_prompt(files: dict[str, str], context: str = "") -> str:
     return "".join(parts)
 
 
+def _extract_objects(raw: str) -> list[dict]:
+    """Stack-based extraction of complete JSON objects, handles nesting."""
+    objects = []
+    depth = 0
+    start = None
+    for i, ch in enumerate(raw):
+        if ch == '{':
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0 and start is not None:
+                try:
+                    obj = json.loads(raw[start:i + 1])
+                    if isinstance(obj, dict) and any(
+                        k in obj for k in ("description", "issue", "severity", "bugs", "decisions")
+                    ):
+                        objects.append(obj)
+                except json.JSONDecodeError:
+                    pass
+                start = None
+    return objects
+
+
 def _parse_json(raw: str) -> Any:
     raw = raw.strip()
     if raw.startswith("```"):
@@ -107,16 +132,7 @@ def _parse_json(raw: str) -> Any:
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
-        import re
-        objects = []
-        for m in re.finditer(r'\{[^{}]+\}', raw, re.DOTALL):
-            try:
-                obj = json.loads(m.group())
-                if any(k in obj for k in ("description", "issue", "severity")):
-                    objects.append(obj)
-            except json.JSONDecodeError:
-                pass
-        return objects
+        return _extract_objects(raw)
 
 
 def _normalise(parsed: Any) -> dict[str, Any]:
@@ -166,9 +182,9 @@ def _normalise(parsed: Any) -> dict[str, Any]:
         for cat_key in _CATEGORY_KEYS:
             for item in parsed.get(cat_key, []):
                 if isinstance(item, dict):
-                    item.setdefault("severity", sev_map.get(cat_key, "medium"))
-                    item.setdefault("category", cat_key)
-                    bugs.append(_to_bug(item))
+                    # New dict — never mutate caller's data
+                    merged = {"severity": sev_map.get(cat_key, "medium"), "category": cat_key, **item}
+                    bugs.append(_to_bug(merged))
         for r in parsed.get("reliability_risks", []):
             risks.append(r if isinstance(r, str) else str(r))
         return {"files_reviewed": sorted(files_seen), "bugs": bugs,
@@ -226,15 +242,17 @@ def review_all(
     totals = {"total_bugs": 0, "critical": 0, "high": 0, "medium": 0, "low": 0}
 
     def _one(name: str, entry: dict) -> tuple[str, dict]:
+        ctx = entry.get("context", "")
+        if extra_context:
+            ctx = f"{ctx} {extra_context}".strip()
         try:
-            ctx = entry.get("context", "")
-            if extra_context:
-                ctx = f"{ctx} {extra_context}".strip()
             result = review_project(entry["path"], context=ctx, max_files=max_files)
             result["name"] = name
             return name, result
+        except ValueError:
+            raise  # bad path / no files — surface immediately, don't swallow
         except Exception as e:
-            logger.error("%s failed: %s", name, e)
+            logger.error("%s failed: %s", name, e, exc_info=True)
             return name, {"error": str(e), "name": name}
 
     with ThreadPoolExecutor(max_workers=3) as pool:
@@ -259,7 +277,7 @@ class BotStatus:
     positions: dict[str, float] = field(default_factory=dict)
     orders_pending: list[dict] = field(default_factory=list)
     last_signal: str | None = None
-    extra: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -292,7 +310,7 @@ class TradingState:
                 "positions": s.positions,
                 "orders_pending": s.orders_pending,
                 **({"last_signal": s.last_signal} if s.last_signal else {}),
-                **s.extra,
+                **({"metadata": s.metadata} if s.metadata else {}),
             }
             for bot, s in self.bot_statuses.items()
         }
@@ -328,9 +346,14 @@ def trading_brain(state: TradingState) -> dict[str, Any]:
 
     raw = deepseek_ask(state.to_prompt(), system=_BRAIN_SYSTEM, max_tokens=1500)
     try:
-        return _parse_json(raw)
+        parsed = _parse_json(raw)
+        if isinstance(parsed, list):
+            parsed = {"decisions": parsed, "no_action": [], "watchdog_note": "", "risk_checks": {}}
+        if not isinstance(parsed, dict):
+            raise ValueError(f"Unexpected response type: {type(parsed)}")
+        return parsed
     except Exception as e:
-        logger.error("trading_brain: bad JSON from DeepSeek — safe HOLD. Error: %s", e)
+        logger.error("trading_brain: bad response from DeepSeek — safe HOLD. Error: %s", e)
         return {
             "decisions": [],
             "no_action": all_bots,

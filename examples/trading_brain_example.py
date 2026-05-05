@@ -3,18 +3,12 @@
 Example: run trading_brain() with mock state.
 Replace regime/exposure/bot_statuses with real data from your system.
 """
-import sys, os, datetime
+import sys, datetime
 from pathlib import Path
 
-_env = Path(__file__).parent.parent / ".env"
-if _env.exists():
-    for line in _env.read_text().splitlines():
-        line = line.strip()
-        if line and not line.startswith("#") and "=" in line:
-            k, v = line.split("=", 1)
-            os.environ.setdefault(k.strip(), v.strip())
-
 sys.path.insert(0, str(Path(__file__).parent.parent))
+from mr_deepseeker.env import load_env
+load_env()
 from mr_deepseeker import trading_brain, BotStatus, TradingState
 
 BOTS = ["ALPACA", "CDC_APP", "CDC_EXCH", "SHARESIES", "RENKO"]
@@ -41,7 +35,7 @@ state = TradingState(
         "CDC_APP":  BotStatus(available_capital=5000),
         "CDC_EXCH": BotStatus(available_capital=20000, positions={"BTC-USDT": 0.3}),
         "SHARESIES": BotStatus(available_capital=8000),
-        "RENKO":    BotStatus(available_capital=10000, last_signal="BUY_ETH"),
+        "RENKO":     BotStatus(available_capital=10000, last_signal="BUY_ETH"),
     },
 )
 

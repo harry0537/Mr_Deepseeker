@@ -10,19 +10,11 @@ Usage:
 """
 import sys
 import json
-import os
 from pathlib import Path
 
-# Load .env from repo root
-_env = Path(__file__).parent.parent / ".env"
-if _env.exists():
-    for line in _env.read_text().splitlines():
-        line = line.strip()
-        if line and not line.startswith("#") and "=" in line:
-            k, v = line.split("=", 1)
-            os.environ.setdefault(k.strip(), v.strip())
-
 sys.path.insert(0, str(Path(__file__).parent.parent))
+from mr_deepseeker.env import load_env
+load_env()
 from mr_deepseeker import review_project, review_all
 
 
