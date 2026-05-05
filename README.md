@@ -1,5 +1,9 @@
 # Mr_Deepseeker
 
+<p align="center">
+  <img src="assets/Mr_Deepseeker_logo.png" alt="Mr_Deepseeker Logo" width="300"/>
+</p>
+
 > *"Why pay a surgeon to mop the floor?"*
 
 **Mr_Deepseeker is a Claude Code skill** that intercepts mechanical code tasks — reviews, test generation, boilerplate, docstrings, translation — and routes them to DeepSeek instead of burning your Claude session budget on them.
