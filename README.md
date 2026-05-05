@@ -59,9 +59,9 @@ This isn't just convenience. The numbers make the case:
 | **DeepSeek v3** | $0.27 / 1M tokens | $1.10 / 1M tokens |
 | **Savings** | **11× cheaper** | **13.6× cheaper** |
 
-A full codebase review — 8k tokens in, 2k tokens out — costs **$0.004 with DeepSeek** versus **$0.054 with Claude**. Every review you offload preserves ~10,000 Claude tokens and extends your session before you hit the wall.
+A full codebase review — 8k tokens in, 2k tokens out — costs **$0.004 with DeepSeek** versus **$0.054 with Claude**. Every review you offload saves ~9,000 Claude tokens that stay in your session budget for harder work.
 
-Reviewing 7 projects in parallel? That's a $0.03 DeepSeek call versus a $0.38 Claude session burn.
+Reviewing 7 projects in parallel? That's a $0.03 DeepSeek call versus a $0.38 Claude session burn — the more mechanical work you route through Mr_Deepseeker, the longer your sessions last.
 
 **Mr_Deepseeker is not a replacement for Claude. It's the system that makes Claude last.**
 
