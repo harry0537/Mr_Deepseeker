@@ -93,6 +93,18 @@ def _load_folder(path: str | Path, max_files: int = 20) -> dict[str, str]:
 _MAX_LINES_PER_FILE = 300
 
 
+def _truncate_at_boundary(lines: list[str], limit: int) -> list[str]:
+    """Truncate at the last top-level def/class before the limit — avoids cutting mid-function."""
+    if len(lines) <= limit:
+        return lines
+    cut = limit
+    for i in range(min(limit, len(lines)) - 1, max(0, limit - 60), -1):
+        if lines[i].startswith(("def ", "class ", "async def ")):
+            cut = i
+            break
+    return lines[:cut]
+
+
 def _build_prompt(files: dict[str, str], context: str = "") -> str:
     parts = []
     if context:
@@ -101,8 +113,9 @@ def _build_prompt(files: dict[str, str], context: str = "") -> str:
     for name, src in files.items():
         lines = src.splitlines()
         if len(lines) > _MAX_LINES_PER_FILE:
-            logger.warning("%s truncated to %d lines (was %d)", name, _MAX_LINES_PER_FILE, len(lines))
-            src = "\n".join(lines[:_MAX_LINES_PER_FILE]) + f"\n# ... truncated ({len(lines)} lines total)"
+            truncated = _truncate_at_boundary(lines, _MAX_LINES_PER_FILE)
+            logger.warning("%s truncated to %d lines at logical boundary (was %d)", name, len(truncated), len(lines))
+            src = "\n".join(truncated) + f"\n# ... truncated ({len(lines)} lines total)"
         parts.append(f"\n### {name}\n```python\n{src}\n```")
     return "".join(parts)
 
@@ -266,8 +279,11 @@ def review_all(
             result = review_project(entry["path"], context=ctx, max_files=max_files)
             result["name"] = name
             return name, result
-        except ValueError:
-            raise  # bad path / no files — surface immediately, don't swallow
+        except ValueError as e:
+            # Config error (bad path, no files) — return as clean error dict, don't re-raise
+            # Re-raising from a thread produces confusing tracebacks; let the caller decide.
+            logger.error("%s config error: %s", name, e)
+            return name, {"error": str(e), "name": name, "config_error": True}
         except Exception as e:
             logger.error("%s failed: %s", name, e, exc_info=True)
             return name, {"error": str(e), "name": name}
@@ -277,11 +293,9 @@ def review_all(
         for future in as_completed(futures):
             try:
                 name, report = future.result()
-            except ValueError as e:
-                raise  # config error — bad path/no files, surface to caller
             except Exception as e:
                 name = futures[future]
-                logger.error("%s future failed: %s", name, e, exc_info=True)
+                logger.error("%s future raised unexpectedly: %s", name, e, exc_info=True)
                 report = {"error": str(e), "name": name}
             reports[name] = report
             if "error" not in report:

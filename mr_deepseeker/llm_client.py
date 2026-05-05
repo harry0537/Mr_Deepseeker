@@ -10,10 +10,17 @@ and most capable for code review tasks.
 from __future__ import annotations
 import os
 import json
+import random
+import threading
+import time
 import urllib.request
+import urllib.error
 import logging
 
 logger = logging.getLogger(__name__)
+
+# Limit concurrent outbound API calls across threads (review_all runs 3 threads)
+_API_SEMAPHORE = threading.Semaphore(2)
 
 DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
 OR_URL       = "https://openrouter.ai/api/v1/chat/completions"
@@ -68,6 +75,11 @@ def _call(url: str, api_key: str, model: str, prompt: str,
             last_exc = e
             logger.warning("Network error %s (attempt %d/%d): %s", url, attempt + 1, retries, e)
 
+        if attempt < retries - 1:
+            backoff = (2 ** attempt) + random.uniform(0, 1)
+            logger.info("Retrying in %.1fs...", backoff)
+            time.sleep(backoff)
+
     raise RuntimeError(f"Failed after {retries} attempts: {last_exc}")
 
 
@@ -83,7 +95,13 @@ def delegate_code(prompt: str, system: str = "", max_tokens: int = 4096) -> str:
     """
     Send prompt to best available LLM. Chain: DeepSeek → Ollama → OpenRouter → Groq.
     Raises RuntimeError if all providers fail.
+    Semaphore-gated to max 2 concurrent outbound calls (safe for review_all parallelism).
     """
+    with _API_SEMAPHORE:
+        return _delegate_code_inner(prompt, system, max_tokens)
+
+
+def _delegate_code_inner(prompt: str, system: str, max_tokens: int) -> str:
     last_exc: Exception | None = None
 
     # 1. DeepSeek
