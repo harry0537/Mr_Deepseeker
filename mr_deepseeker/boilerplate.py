@@ -10,8 +10,22 @@ write_docstrings(code)   — add docstrings to all functions in a file
 translate(code, lang)    — rewrite code in another language
 """
 from __future__ import annotations
+import logging
 
 from mr_deepseeker.llm_client import delegate_code
+
+logger = logging.getLogger(__name__)
+
+_MAX_INPUT_CHARS = 40_000  # ~10k tokens — warn above this
+
+
+def _check_size(code: str, label: str = "input") -> None:
+    if len(code) > _MAX_INPUT_CHARS:
+        logger.warning(
+            "%s is %d chars — may exceed LLM token limit and cause truncated output. "
+            "Consider splitting into smaller chunks.",
+            label, len(code)
+        )
 
 _CODE_SYSTEM = (
     "You are an expert programmer. Return ONLY the requested code — "
@@ -71,6 +85,7 @@ def expand_stub(code: str, context: str = "", max_tokens: int = 4096) -> str:
         '''
         full = expand_stub(stub, context="clamp result to [0, 0.25]")
     """
+    _check_size(code, "expand_stub input")
     parts = []
     if context:
         parts.append(f"Requirements: {context}\n\n")
@@ -93,6 +108,7 @@ def write_tests(code: str, context: str = "", max_tokens: int = 4096) -> str:
         tests = write_tests(open("my_module.py").read(), context="mock network calls")
         open("test_my_module.py", "w").write(tests)
     """
+    _check_size(code, "write_tests input")
     parts = []
     if context:
         parts.append(f"Testing requirements: {context}\n\n")
@@ -115,6 +131,7 @@ def write_docstrings(code: str, max_tokens: int = 4096) -> str:
         documented = write_docstrings(src)
         open("utils.py", "w").write(documented)
     """
+    _check_size(code, "write_docstrings input")
     return delegate_code(
         f"Add docstrings to all undocumented functions and classes:\n\n{code}",
         system=_DOCSTRING_SYSTEM,
@@ -137,6 +154,7 @@ def translate(code: str, target_language: str, context: str = "", max_tokens: in
     Example:
         go_code = translate(python_code, "Go", context="use standard library only")
     """
+    _check_size(code, "translate input")
     parts = [f"Translate to {target_language}"]
     if context:
         parts.append(f" ({context})")

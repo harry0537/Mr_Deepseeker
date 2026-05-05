@@ -81,10 +81,16 @@ def _load_folder(path: str | Path, max_files: int = 20) -> dict[str, str]:
             logger.warning("Capped at %d files, skipping rest", max_files)
             break
         try:
-            files[f.name] = f.read_text(errors="replace")
-        except OSError as e:
+            content = f.read_text(errors="replace")
+            if "�" in content:
+                logger.warning("Non-UTF8 bytes replaced in %s — LLM may see garbled content", f.name)
+            files[f.name] = content
+        except (OSError, PermissionError, UnicodeError) as e:
             logger.warning("Could not read %s: %s", f, e)
     return files
+
+
+_MAX_LINES_PER_FILE = 300
 
 
 def _build_prompt(files: dict[str, str], context: str = "") -> str:
@@ -93,6 +99,10 @@ def _build_prompt(files: dict[str, str], context: str = "") -> str:
         parts.append(f"CONTEXT: {context}\n")
     parts.append("RUNTIME: Python 3.11, asyncio\n\nCODE FILES:\n")
     for name, src in files.items():
+        lines = src.splitlines()
+        if len(lines) > _MAX_LINES_PER_FILE:
+            logger.warning("%s truncated to %d lines (was %d)", name, _MAX_LINES_PER_FILE, len(lines))
+            src = "\n".join(lines[:_MAX_LINES_PER_FILE]) + f"\n# ... truncated ({len(lines)} lines total)"
         parts.append(f"\n### {name}\n```python\n{src}\n```")
     return "".join(parts)
 
@@ -171,19 +181,26 @@ def _normalise(parsed: Any) -> dict[str, Any]:
     if not isinstance(parsed, dict):
         return {"files_reviewed": [], "bugs": [], "reliability_risks": [], "dead_code_fragments": []}
 
-    _CATEGORY_KEYS = ("logical_errors", "race_conditions", "unhandled_edge_cases",
-                      "performance_risks", "reliability_failures", "security_issues",
-                      "dead_code", "warnings", "critical", "high", "medium", "low")
-    if any(k in parsed for k in _CATEGORY_KEYS):
-        sev_map = {k: ("critical" if k in ("race_conditions", "security_issues") else
-                       "high" if k in ("logical_errors", "reliability_failures") else
-                       "medium" if k == "unhandled_edge_cases" else "low")
-                   for k in _CATEGORY_KEYS}
-        for cat_key in _CATEGORY_KEYS:
+    # Maps DeepSeek's plural category keys → (severity, singular schema category)
+    _CATEGORY_MAP: dict[str, tuple[str, str]] = {
+        "race_conditions":      ("critical", "race_condition"),
+        "security_issues":      ("critical", "logic_error"),
+        "logical_errors":       ("high",     "logic_error"),
+        "reliability_failures": ("high",     "reliability"),
+        "unhandled_edge_cases": ("medium",   "unhandled_exception"),
+        "performance_risks":    ("low",      "performance"),
+        "dead_code":            ("low",      "dead_code"),
+        "warnings":             ("low",      "logic_error"),
+        "critical":             ("critical", "logic_error"),
+        "high":                 ("high",     "logic_error"),
+        "medium":               ("medium",   "logic_error"),
+        "low":                  ("low",      "logic_error"),
+    }
+    if any(k in parsed for k in _CATEGORY_MAP):
+        for cat_key, (sev, cat) in _CATEGORY_MAP.items():
             for item in parsed.get(cat_key, []):
                 if isinstance(item, dict):
-                    # New dict — never mutate caller's data
-                    merged = {"severity": sev_map.get(cat_key, "medium"), "category": cat_key, **item}
+                    merged = {"severity": sev, "category": cat, **item}
                     bugs.append(_to_bug(merged))
         for r in parsed.get("reliability_risks", []):
             risks.append(r if isinstance(r, str) else str(r))
@@ -258,13 +275,21 @@ def review_all(
     with ThreadPoolExecutor(max_workers=3) as pool:
         futures = {pool.submit(_one, n, e): n for n, e in registry.items()}
         for future in as_completed(futures):
-            name, report = future.result()
+            try:
+                name, report = future.result()
+            except ValueError as e:
+                raise  # config error — bad path/no files, surface to caller
+            except Exception as e:
+                name = futures[future]
+                logger.error("%s future failed: %s", name, e, exc_info=True)
+                report = {"error": str(e), "name": name}
             reports[name] = report
-            for bug in report.get("bugs", []):
-                totals["total_bugs"] += 1
-                sev = bug.get("severity", "low").lower()
-                if sev in totals:
-                    totals[sev] += 1
+            if "error" not in report:
+                for bug in report.get("bugs", []):
+                    totals["total_bugs"] += 1
+                    sev = bug.get("severity", "low").lower()
+                    if sev in totals:
+                        totals[sev] += 1
 
     return {"summary": totals, "projects": reports}
 

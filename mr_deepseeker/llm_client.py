@@ -36,7 +36,8 @@ GROQ_CODE_MODELS = [
 
 
 def _call(url: str, api_key: str, model: str, prompt: str,
-          system: str = "", max_tokens: int = 4096, timeout: int = 90) -> str:
+          system: str = "", max_tokens: int = 4096, timeout: int = 90,
+          retries: int = 2) -> str:
     messages = []
     if system:
         messages.append({"role": "system", "content": system})
@@ -46,9 +47,28 @@ def _call(url: str, api_key: str, model: str, prompt: str,
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     req = urllib.request.Request(url, data=body, headers=headers, method="POST")
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        data = json.loads(resp.read())
-    return data["choices"][0]["message"]["content"]
+
+    last_exc: Exception | None = None
+    for attempt in range(max(1, retries)):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read())
+            if "error" in data:
+                raise RuntimeError(f"API error: {data['error']}")
+            choices = data.get("choices") or []
+            if not choices:
+                raise RuntimeError(f"Empty choices in response: {data}")
+            return choices[0]["message"]["content"]
+        except urllib.error.HTTPError as e:
+            if e.code < 500:
+                raise  # 4xx — client error, no point retrying
+            last_exc = e
+            logger.warning("HTTP %d from %s (attempt %d/%d)", e.code, url, attempt + 1, retries)
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            last_exc = e
+            logger.warning("Network error %s (attempt %d/%d): %s", url, attempt + 1, retries, e)
+
+    raise RuntimeError(f"Failed after {retries} attempts: {last_exc}")
 
 
 def deepseek_ask(prompt: str, system: str = "", max_tokens: int = 4096,
@@ -75,11 +95,12 @@ def delegate_code(prompt: str, system: str = "", max_tokens: int = 4096) -> str:
             logger.warning("DeepSeek failed: %s", e)
             last_exc = e
 
-    # 2. Ollama (local)
+    # 2. Ollama (local) — model configurable via OLLAMA_MODEL env var
+    ollama_model = os.environ.get("OLLAMA_MODEL", "qwen2.5:1.5b")
     try:
-        return _call(OLLAMA_URL, "", "qwen2.5:1.5b", prompt, system, max_tokens, timeout=60)
+        return _call(OLLAMA_URL, "", ollama_model, prompt, system, max_tokens, timeout=60, retries=1)
     except Exception as e:
-        logger.warning("Ollama failed: %s", e)
+        logger.warning("Ollama/%s failed: %s", ollama_model, e)
         last_exc = e
 
     # 3. OpenRouter
