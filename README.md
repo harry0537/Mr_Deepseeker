@@ -1,43 +1,70 @@
 # Mr_Deepseeker
 
-AI-powered code review and trading decision engine built on DeepSeek. Audits Python projects for bugs, race conditions, dead code, and reliability risks — with a multi-bot trading brain that makes live trade decisions from market state.
+**Stop burning Claude session limits on mechanical work.**
 
-Built as a [Claude Code](https://claude.ai/code) skill for an algorithmic trading system. Works standalone too.
+Mr_Deepseeker offloads code review and boilerplate generation to DeepSeek — a capable, cheap coding model — so your Claude sessions stay focused on the reasoning and architecture work only Claude should be doing.
+
+Zero dependencies. Pure stdlib. Works standalone or as a [Claude Code](https://claude.ai/code) skill.
+
+---
+
+## The problem
+
+Claude has session limits. Every token spent generating boilerplate, writing tests, reviewing files for bugs, or translating code is a token that could have gone to something harder. DeepSeek is purpose-built for mechanical code tasks and costs a fraction of a cent per call.
+
+Mr_Deepseeker is the bridge.
 
 ---
 
 ## What it does
 
 ### Code Review
-Point it at any Python project folder. DeepSeek reads every `.py` file and returns a structured bug report — severity-ranked, with file/line references and remediation hints.
+Point it at any Python folder. DeepSeek reads every `.py` file and returns a structured bug report — severity-ranked, file/line referenced, remediation included.
 
 ```
 [CRITICAL] order_manager.py:87  [race_condition]
-    Position update and order submission are not atomic — parallel fills can double-count
-    FIX: Use asyncio.Lock() around the position update + order submission block
+    Position update and order submission are not atomic
+    FIX: Use asyncio.Lock() around the position update + submit block
 
 [HIGH]     risk_engine.py:134  [logic_error]
     Kelly fraction not clamped — can return >1.0 on high-confidence signals
     FIX: fraction = min(kelly_fraction, max_kelly) before returning
 ```
 
-### Trading Brain
-Feed it a snapshot of your system state (regime, exposure, bot positions, signals). DeepSeek returns buy/sell decisions for each bot, respecting risk rules you define.
+### Boilerplate & Code Generation
+Delegate any mechanical coding task: generate code from a description, fill out stubs, write tests, add docstrings, translate between languages.
+
+```python
+from mr_deepseeker import generate, expand_stub, write_tests, write_docstrings, translate
+
+# Generate from scratch
+code = generate("async rate limiter using token bucket, stdlib only")
+
+# Fill out a stub
+full = expand_stub(my_stub_code, context="use asyncio, no third-party libs")
+
+# Write tests
+tests = write_tests(open("my_module.py").read(), context="mock all network calls")
+
+# Add docstrings to a file
+src = write_docstrings(open("utils.py").read())
+
+# Translate to another language
+go_code = translate(python_code, "Go", context="idiomatic Go, stdlib only")
+```
 
 ---
 
 ## Install
 
 ```bash
-git clone https://github.com/yourusername/Mr_Deepseeker.git
+git clone https://github.com/harry0537/Mr_Deepseeker.git
 cd Mr_Deepseeker
 cp .env.example .env
 # Add your DEEPSEEK_API_KEY to .env
 ```
 
-No dependencies beyond Python 3.11+ stdlib. DeepSeek API is cheap — code reviews cost ~$0.01 each.
-
-Get a DeepSeek key at [platform.deepseek.com](https://platform.deepseek.com).
+Get a DeepSeek key at [platform.deepseek.com](https://platform.deepseek.com). Code reviews cost ~$0.01 each.
 
 ---
 
@@ -46,118 +73,92 @@ Get a DeepSeek key at [platform.deepseek.com](https://platform.deepseek.com).
 ### CLI — review a project
 
 ```bash
-# Review a single folder
-python scripts/review.py review /path/to/your/project
+# Review a folder
+python3 scripts/review.py review /path/to/your/project
 
 # With focus hint
-python scripts/review.py review /path/to/your/project "focus on async race conditions"
+python3 scripts/review.py review /path/to/your/project "focus on async race conditions"
+
+# Review multiple projects from a registry
+python3 scripts/review.py review-all examples/custom_registry.json
 
 # Raw JSON output
-python scripts/review.py json /path/to/your/project
-
-# Review multiple projects from a registry file
-python scripts/review.py review-all examples/custom_registry.json
+python3 scripts/review.py json /path/to/your/project
 ```
 
-### Python API
+### Python API — review
 
 ```python
-from mr_deepseeker import review_project, review_all
+from mr_deepseeker import review_project, review_all, load_env
+load_env()  # loads .env
 
-# Single folder
-result = review_project("/path/to/your/bot", context="focus on API timeout handling")
+result = review_project("/path/to/project", context="focus on API timeout handling")
 
 for bug in result["bugs"]:
-    print(f"[{bug['severity'].upper()}] {bug['file']}:{bug.get('line','')} — {bug['description']}")
+    sev = bug["severity"].upper()
+    loc = f"{bug['file']}:{bug.get('line', '')}"
+    print(f"[{sev}] {loc} — {bug['description']}")
 
 # Multiple folders in parallel
 registry = {
-    "my_bot":   {"path": "/path/to/bot",    "context": "trading bot, focus on order logic"},
-    "shared":   {"path": "/path/to/shared", "context": "shared lib"},
+    "api":    {"path": "/path/to/api",    "context": "REST API, focus on input validation"},
+    "worker": {"path": "/path/to/worker", "context": "async worker, focus on race conditions"},
 }
 report = review_all(registry)
 print(f"Total bugs: {report['summary']['total_bugs']}")
 ```
 
-### Trading Brain
+### Python API — boilerplate
 
 ```python
-from mr_deepseeker import trading_brain, BotStatus, TradingState
-import datetime
+from mr_deepseeker import generate, expand_stub, write_tests, write_docstrings, translate, load_env
+load_env()
 
-state = TradingState(
-    timestamp=datetime.datetime.now(datetime.UTC).isoformat(),
-    bots=["ALPACA", "CDC_EXCH"],
-    regime={"regime": "BULL_TREND", "confidence": "HIGH", "halt_buys": False},
-    macro_signal={"overall": "neutral", "sources": {}},
-    signals=[{"bot": "ALPACA", "ticker": "SPY", "strength": 0.72, "side": "BUY"}],
-    exposure={"total": 0.35, "bot_breakdown": {"ALPACA": 0.2, "CDC_EXCH": 0.15}},
-    watchdog={"halted": False, "reason": None},
-    bot_statuses={
-        "ALPACA":   BotStatus(available_capital=45000, positions={"SPY": 50}),
-        "CDC_EXCH": BotStatus(available_capital=20000),
-    },
-)
+# Generate a dataclass
+code = generate("dataclass for a trade order: BUY/SELL enum, ticker str, price float, quantity int, timestamp datetime")
+print(code)
 
-result = trading_brain(state)
-for d in result["decisions"]:
-    print(f"{d['bot']} → {d['action']} {d.get('ticker','')} qty={d.get('quantity','?')}")
-#   ALPACA → BUY SPY qty=12
+# Expand a stub you wrote
+stub = """
+def retry(fn, max_attempts: int, backoff: float):
+    # TODO: exponential backoff, re-raise on final attempt
+    pass
+"""
+print(expand_stub(stub))
+
+# Write tests for an existing module
+tests = write_tests(open("src/parser.py").read())
+open("tests/test_parser.py", "w").write(tests)
+
+# Translate Python → TypeScript
+ts = translate(open("src/utils.py").read(), "TypeScript")
+open("src/utils.ts", "w").write(ts)
 ```
-
-See `examples/trading_brain_example.py` for a full working example.
 
 ---
 
-## Claude Code Skill
+## As a Claude Code Skill
 
-If you use [Claude Code](https://claude.ai/code), install Mr_Deepseeker as a skill so Claude can run reviews and the trading brain directly from chat.
+Install so Claude automatically delegates to Mr_Deepseeker when approaching session limits:
 
 ```bash
-# Copy the skill into your Claude skills directory
 cp -r claude_skill ~/.claude/skills/Mr_Deepseeker
 ```
 
-Then in Claude Code:
-> *"review my alpacabot"* → Claude runs DeepSeek review and presents the report  
-> *"run the trading brain"* → Claude builds TradingState from live data and calls the brain  
-> *"audit all bots"* → Claude runs review_all in parallel across all registered folders
+Add your key to `~/.claude/skills/Mr_Deepseeker/.env` (or set `DEEPSEEK_API_KEY` in your environment).
 
-Edit `claude_skill/SKILL.md` to update bot registry paths and trigger phrases for your setup.
+Claude will offload code review and boilerplate tasks to DeepSeek instead of burning session tokens on them.
 
 ---
 
 ## LLM fallback chain
 
-If DeepSeek is unavailable, Mr_Deepseeker automatically tries (in order):
-1. **DeepSeek** — primary, cheapest, best for code
-2. **Ollama** (local) — free, runs on your machine if you have it
-3. **OpenRouter** — free tier models as backup
-4. **Groq** — fast free tier, rate limited
+One key is enough. Mr_Deepseeker tries providers in order until one works:
 
-Set whichever keys you have in `.env`. One is enough.
-
----
-
-## Project structure
-
-```
-mr_deepseeker/
-├── deepseek.py       # review_project(), review_all(), trading_brain()
-└── llm_client.py     # LLM delegation with fallback chain
-
-scripts/
-└── review.py         # CLI runner
-
-claude_skill/
-├── SKILL.md          # Claude Code skill definition
-└── references/
-    └── trading_brain.md  # TradingState construction reference
-
-examples/
-├── custom_registry.json      # multi-project registry template
-└── trading_brain_example.py  # full brain example with mock state
-```
+1. **DeepSeek** (`DEEPSEEK_API_KEY`) — primary, best quality, cheapest
+2. **Ollama** (local) — free if you have Ollama running
+3. **OpenRouter** (`OPENROUTER_API_KEY`) — free tier models
+4. **Groq** (`GROQ_API_KEY`) — fast free tier, rate limited
 
 ---
 
@@ -179,6 +180,29 @@ examples/
   "reliability_risks": ["No circuit breaker on API failures"],
   "dead_code_fragments": [{"file": "utils.py", "lines": "45-60", "function": "old_formatter"}]
 }
+```
+
+---
+
+## Project structure
+
+```
+mr_deepseeker/
+├── deepseek.py      # review_project(), review_all()
+├── boilerplate.py   # generate(), expand_stub(), write_tests(), write_docstrings(), translate()
+├── llm_client.py    # LLM delegation with fallback chain
+└── env.py           # .env loader
+
+scripts/
+└── review.py        # CLI
+
+claude_skill/
+├── SKILL.md         # Claude Code skill definition
+└── references/
+
+examples/
+├── custom_registry.json
+└── trading_brain_example.py
 ```
 
 ---
