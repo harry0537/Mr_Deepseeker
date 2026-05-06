@@ -20,7 +20,10 @@ Zero dependencies. Pure Python stdlib.
 
 ```bash
 git clone https://github.com/harry0537/Mr_Deepseeker.git && \
-cp -r Mr_Deepseeker/claude_skill ~/.claude/skills/Mr_Deepseeker && \
+mkdir -p ~/.claude/skills/Mr_Deepseeker && \
+cp -r Mr_Deepseeker/claude_skill/. ~/.claude/skills/Mr_Deepseeker/ && \
+cp -r Mr_Deepseeker/mr_deepseeker ~/.claude/skills/Mr_Deepseeker/ && \
+cp -r Mr_Deepseeker/scripts ~/.claude/skills/Mr_Deepseeker/ && \
 echo "DEEPSEEK_API_KEY=sk-your-key-here" > ~/.claude/skills/Mr_Deepseeker/.env
 ```
 
@@ -128,10 +131,10 @@ tests = write_tests(open("src/parser.py").read())
 ### CLI
 
 ```bash
-python3 scripts/review.py review /path/to/project
-python3 scripts/review.py review /path/to/project "focus on async race conditions"
-python3 scripts/review.py review-all examples/custom_registry.json
-python3 scripts/review.py json /path/to/project
+python3 scripts/run_review.py review /path/to/project
+python3 scripts/run_review.py review /path/to/project "focus on async race conditions"
+python3 scripts/run_review.py review-all examples/custom_registry.json
+python3 scripts/run_review.py json /path/to/project
 ```
 
 ---
@@ -161,7 +164,7 @@ mr_deepseeker/          ← the engine underneath
 └── env.py              # .env loader
 
 scripts/
-└── review.py           # standalone CLI
+└── run_review.py       # standalone CLI
 
 examples/
 └── custom_registry.json

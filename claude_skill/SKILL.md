@@ -68,10 +68,10 @@ ts_code = translate(python_code, "TypeScript", context="idiomatic, strict types"
 ## CLI (alternative)
 
 ```bash
-python3 scripts/review.py review /path/to/project
-python3 scripts/review.py review /path/to/project "focus hint"
-python3 scripts/review.py review-all examples/custom_registry.json
-python3 scripts/review.py json /path/to/project   # raw JSON
+python3 scripts/run_review.py review /path/to/project
+python3 scripts/run_review.py review /path/to/project "focus hint"
+python3 scripts/run_review.py review-all examples/custom_registry.json
+python3 scripts/run_review.py json /path/to/project   # raw JSON
 ```
 
 ---
