@@ -1,0 +1,10 @@
+{
+  "my_bot": {
+    "path": "/path/to/my_bot",
+    "context": "Focus on API timeout handling and error recovery."
+  },
+  "shared_lib": {
+    "path": "/path/to/shared",
+    "context": "Shared library — focus on correctness of utility functions."
+  }
+}
