@@ -2,10 +2,11 @@
 """
 LLM delegation client — tries providers in priority order until one succeeds.
 
-Priority: DeepSeek → Ollama (local) → OpenRouter → Groq
+Priority: DeepSeek(direct) → OpenRouter(deepseek-chat) → Ollama → OpenRouter(free) → Groq
 
 Set API keys in .env or environment variables. DeepSeek is the cheapest
-and most capable for code review tasks.
+and most capable for code review tasks. OpenRouter acts as resilient fallback
+for the same DeepSeek model when the direct API times out.
 """
 from __future__ import annotations
 import os
@@ -28,6 +29,8 @@ GROQ_URL     = "https://api.groq.com/openai/v1/chat/completions"
 OLLAMA_URL   = "http://localhost:11434/v1/chat/completions"
 
 DEEPSEEK_MODEL = "deepseek-chat"
+
+OR_DEEPSEEK_MODEL = "deepseek/deepseek-chat"  # paid — same model, OR's infra
 
 OR_CODE_MODELS = [
     "qwen/qwen3-coder:free",
@@ -104,16 +107,28 @@ def delegate_code(prompt: str, system: str = "", max_tokens: int = 4096) -> str:
 def _delegate_code_inner(prompt: str, system: str, max_tokens: int) -> str:
     last_exc: Exception | None = None
 
-    # 1. DeepSeek
+    or_key = os.environ.get("OPENROUTER_API_KEY", "")
+
+    # 1. DeepSeek direct — short timeout so fallback kicks in fast
     deepseek_key = os.environ.get("DEEPSEEK_API_KEY", "")
     if deepseek_key:
         try:
-            return _call(DEEPSEEK_URL, deepseek_key, DEEPSEEK_MODEL, prompt, system, max_tokens)
+            return _call(DEEPSEEK_URL, deepseek_key, DEEPSEEK_MODEL, prompt, system,
+                         max_tokens, timeout=60, retries=1)
         except Exception as e:
-            logger.warning("DeepSeek failed: %s", e)
+            logger.warning("DeepSeek(direct) failed: %s", e)
             last_exc = e
 
-    # 2. Ollama (local) — model configurable via OLLAMA_MODEL env var
+    # 2. OpenRouter → deepseek-chat (same model, more reliable infra)
+    if or_key:
+        try:
+            return _call(OR_URL, or_key, OR_DEEPSEEK_MODEL, prompt, system,
+                         max_tokens, timeout=90, retries=2)
+        except Exception as e:
+            logger.warning("OpenRouter(deepseek-chat) failed: %s", e)
+            last_exc = e
+
+    # 3. Ollama (local) — model configurable via OLLAMA_MODEL env var
     ollama_model = os.environ.get("OLLAMA_MODEL", "qwen2.5:1.5b")
     try:
         return _call(OLLAMA_URL, "", ollama_model, prompt, system, max_tokens, timeout=60, retries=1)
@@ -121,8 +136,7 @@ def _delegate_code_inner(prompt: str, system: str, max_tokens: int) -> str:
         logger.warning("Ollama/%s failed: %s", ollama_model, e)
         last_exc = e
 
-    # 3. OpenRouter
-    or_key = os.environ.get("OPENROUTER_API_KEY", "")
+    # 4. OpenRouter free models
     if or_key:
         for model in OR_CODE_MODELS:
             try:
@@ -131,7 +145,7 @@ def _delegate_code_inner(prompt: str, system: str, max_tokens: int) -> str:
                 logger.warning("OpenRouter %s failed: %s", model, e)
                 last_exc = e
 
-    # 4. Groq
+    # 5. Groq
     groq_key = os.environ.get("GROQ_API_KEY", "")
     if groq_key:
         for model in GROQ_CODE_MODELS:

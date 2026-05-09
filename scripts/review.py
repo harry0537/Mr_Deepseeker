@@ -7,7 +7,11 @@ Usage:
     python scripts/review.py review /path/to/project "focus on async race conditions"
     python scripts/review.py review-all registry.json
     python scripts/review.py json /path/to/project      # raw JSON output
+    python scripts/review.py summarize /path/to/file.py
+    python scripts/review.py commit-msg                 # reads git diff --staged
+    python scripts/review.py commit-msg "context hint"
 """
+import subprocess
 import sys
 import json
 from pathlib import Path
@@ -15,7 +19,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from mr_deepseeker.env import load_env
 load_env()
-from mr_deepseeker import review_project, review_all
+from mr_deepseeker import review_project, review_all, summarize_file, write_commit_message
 
 
 def print_report(result: dict, label: str = "") -> None:
@@ -102,6 +106,22 @@ if __name__ == "__main__":
         context = sys.argv[3] if len(sys.argv) > 3 else ""
         result = review_project(path, context=context)
         print(json.dumps(result, indent=2))
+
+    elif cmd == "summarize":
+        path = Path(sys.argv[2])
+        digest = summarize_file(path.read_text(errors="replace"), filename=path.name)
+        print(digest)
+
+    elif cmd == "commit-msg":
+        context = sys.argv[2] if len(sys.argv) > 2 else ""
+        diff = subprocess.check_output(["git", "diff", "--staged"], text=True)
+        if not diff.strip():
+            diff = subprocess.check_output(["git", "diff", "HEAD"], text=True)
+        if not diff.strip():
+            print("No staged or uncommitted changes found.")
+            sys.exit(1)
+        msg = write_commit_message(diff, context=context)
+        print(msg)
 
     else:
         print(f"Unknown command: {cmd}")
