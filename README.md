@@ -55,23 +55,23 @@ you:    translate utils.py to TypeScript
 claude: [routes to DeepSeek, returns idiomatic TS]
 ```
 
-Trigger phrases: *"review [project]"*, *"audit [folder]"*, *"find bugs in"*, *"write tests for"*, *"generate boilerplate"*, *"write docstrings"*, *"expand this stub"*, *"translate to [language]"*
+Trigger phrases: *"review [project]"*, *"audit [folder]"*, *"find bugs in"*, *"write tests for"*, *"generate boilerplate"*, *"write docstrings"*, *"expand this stub"*, *"translate to [language]"*, *"refactor this"*, *"add type hints"*, *"fix these bugs"*, *"what does this file do"*, *"generate commit message"*
 
 ---
 
 ## The economics
 
-This isn't just convenience. The numbers make the case:
+Same $1. Completely different output.
 
-| | Input | Output |
-|---|---|---|
-| **Claude Sonnet** | $3.00 / 1M tokens | $15.00 / 1M tokens |
-| **DeepSeek v3** | $0.27 / 1M tokens | $1.10 / 1M tokens |
-| **Savings** | **11× cheaper** | **13.6× cheaper** |
+| $1 spent on… | Code reviews | Test files written | Files summarized |
+|---|---|---|---|
+| **Claude Sonnet** | ~18 | ~12 | ~55 |
+| **Mr_Deepseeker** | ~250 | ~165 | ~750 |
+| **Multiplier** | **14×** | **14×** | **14×** |
 
-A full codebase review — 8k tokens in, 2k tokens out — costs **$0.004 with DeepSeek** versus **$0.054 with Claude**. Every review you offload saves ~9,000 Claude tokens that stay in your session budget for harder work.
+DeepSeek runs the same class of task at roughly **1/14th the cost** of Claude Sonnet. That multiplier holds across review, generation, and summarization — anything token-heavy and mechanical.
 
-Reviewing 7 projects in parallel? That's a $0.03 DeepSeek call versus a $0.38 Claude session burn — the more mechanical work you route through Mr_Deepseeker, the longer your sessions last.
+**What this means in practice:** every time you ask Claude to review a file, write a test, or summarize a module, you're spending 14× more than you need to. Mr_Deepseeker intercepts those tasks and routes them to DeepSeek. Your Claude budget stays intact for the work only Claude can do — architecture decisions, debugging reasoning, planning.
 
 **Mr_Deepseeker is not a replacement for Claude. It's the system that makes Claude last.**
 
