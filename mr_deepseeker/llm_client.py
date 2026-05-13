@@ -2,7 +2,7 @@
 """
 LLM delegation client — tries providers in priority order until one succeeds.
 
-Priority: DeepSeek(direct) → OpenRouter(deepseek-chat) → Ollama → OpenRouter(free) → Groq
+Priority: DeepSeek(direct) → OpenRouter(deepseek-chat) → OpenAI → OpenRouter(free) → Groq
 
 Set API keys in .env or environment variables. DeepSeek is the cheapest
 and most capable for code review tasks. OpenRouter acts as resilient fallback
@@ -26,7 +26,7 @@ _API_SEMAPHORE = threading.Semaphore(2)
 DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
 OR_URL       = "https://openrouter.ai/api/v1/chat/completions"
 GROQ_URL     = "https://api.groq.com/openai/v1/chat/completions"
-OLLAMA_URL   = "http://localhost:11434/v1/chat/completions"
+OPENAI_URL   = "https://api.openai.com/v1/chat/completions"
 
 DEEPSEEK_MODEL = "deepseek-chat"
 
@@ -96,7 +96,7 @@ def deepseek_ask(prompt: str, system: str = "", max_tokens: int = 4096,
 
 def delegate_code(prompt: str, system: str = "", max_tokens: int = 4096) -> str:
     """
-    Send prompt to best available LLM. Chain: DeepSeek → Ollama → OpenRouter → Groq.
+    Send prompt to best available LLM. Chain: DeepSeek → OpenAI → OpenRouter → Groq.
     Semaphore-gated to max 2 concurrent outbound calls (safe for review_all parallelism).
     Raises RuntimeError if all providers fail.
     """
@@ -128,13 +128,15 @@ def _delegate_code_inner(prompt: str, system: str, max_tokens: int) -> str:
             logger.warning("OpenRouter(deepseek-chat) failed: %s", e)
             last_exc = e
 
-    # 3. Ollama (local) — model configurable via OLLAMA_MODEL env var
-    ollama_model = os.environ.get("OLLAMA_MODEL", "qwen2.5:1.5b")
-    try:
-        return _call(OLLAMA_URL, "", ollama_model, prompt, system, max_tokens, timeout=60, retries=1)
-    except Exception as e:
-        logger.warning("Ollama/%s failed: %s", ollama_model, e)
-        last_exc = e
+    # 3. OpenAI
+    openai_key = os.environ.get("OPENAI_API_KEY", "")
+    if openai_key:
+        try:
+            return _call(OPENAI_URL, openai_key, "gpt-4o-mini", prompt, system,
+                         max_tokens, timeout=60, retries=2)
+        except Exception as e:
+            logger.warning("OpenAI failed: %s", e)
+            last_exc = e
 
     # 4. OpenRouter free models
     if or_key:
