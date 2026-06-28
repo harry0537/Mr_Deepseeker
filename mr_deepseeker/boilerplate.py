@@ -240,9 +240,124 @@ def add_type_hints(code: str, max_tokens: int = 4096) -> str:
     )
 
 
+def _bug_lines_prompt(bugs: list[dict]) -> str:
+    parts = []
+    for i, b in enumerate(bugs, 1):
+        loc = f"{b.get('file', '?')}:{b.get('line', '?')}"
+        parts.append(
+            f"{i}. [{b.get('severity','?').upper()}] {loc} — {b.get('description','')}"
+            + (f"\n   FIX: {b['remediation']}" if b.get("remediation") else "")
+        )
+    return "\n".join(parts)
+
+
+def _extract_enclosing_function(lines: list[str], target_1idx: int, pad: int = 10) -> tuple[int, int]:
+    """Return (start, end) 0-indexed line range covering the function around target_1idx."""
+    n = len(lines)
+    t = min(target_1idx - 1, n - 1)
+
+    # Walk back to find enclosing def/class
+    func_start = max(0, t - pad)
+    for i in range(t, -1, -1):
+        s = lines[i].lstrip()
+        if s.startswith(("def ", "async def ", "class ")):
+            func_start = i
+            break
+
+    # Walk forward: stop when we hit a same-or-lower indent def/class after the body starts
+    func_indent = len(lines[func_start]) - len(lines[func_start].lstrip())
+    func_end = min(n - 1, t + pad)
+    for i in range(func_start + 2, n):
+        s = lines[i].lstrip()
+        if s and not s.startswith("#"):
+            indent = len(lines[i]) - len(s)
+            if indent <= func_indent and s.startswith(("def ", "async def ", "class ")):
+                func_end = i - 1
+                break
+    else:
+        func_end = n - 1
+
+    # Add a small buffer
+    return max(0, func_start - 3), min(n - 1, func_end + 3)
+
+
+def fix_bugs_surgical(code: str, bugs: list[dict], context: str = "", max_tokens: int = 8192) -> str:
+    """
+    Fix bugs by sending only the affected code sections to DeepSeek.
+    Safe for large files that exceed token limits in full-file mode.
+
+    Groups bugs by proximity, extracts the enclosing function for each group,
+    fixes it independently, then splices the result back into the original file.
+
+    Args:
+        code:      full Python source
+        bugs:      list of bug dicts (file, line, description, remediation)
+        context:   optional extra instructions
+        max_tokens: response length cap per chunk
+
+    Returns:
+        Fixed source code (full file).
+    """
+    lines = code.splitlines(keepends=True)
+    n = len(lines)
+
+    # Collect (line_number_1idx, bug) pairs, skip bugs with no line
+    located: list[tuple[int, dict]] = []
+    for b in bugs:
+        ln = b.get("line")
+        if ln and isinstance(ln, int) and 1 <= ln <= n:
+            located.append((ln, b))
+
+    if not located:
+        # No line info — fall back to full-file fix
+        logger.warning("fix_bugs_surgical: no line numbers — falling back to full-file fix")
+        return fix_bugs(code, bugs, context=context, max_tokens=max_tokens)
+
+    # Sort by line, then group bugs whose enclosing functions overlap
+    located.sort(key=lambda x: x[0])
+    groups: list[tuple[int, int, list[dict]]] = []  # (start_0idx, end_0idx, bugs)
+    for ln, bug in located:
+        s, e = _extract_enclosing_function(lines, ln)
+        merged = False
+        for i, (gs, ge, gblist) in enumerate(groups):
+            if s <= ge and e >= gs:  # overlapping ranges — merge
+                groups[i] = (min(gs, s), max(ge, e), gblist + [bug])
+                merged = True
+                break
+        if not merged:
+            groups.append((s, e, [bug]))
+
+    # Fix each group independently and splice back
+    result_lines = list(lines)
+    # Process in reverse order so earlier line indices stay valid after splicing
+    for gs, ge, gblist in sorted(groups, key=lambda x: x[0], reverse=True):
+        snippet = "".join(lines[gs:ge + 1])
+        prompt_parts = [
+            f"Apply these fixes to the code snippet below.\n"
+            f"This is lines {gs+1}–{ge+1} of the file.\n"
+            f"Return ONLY the fixed snippet — same line range, no extra lines, no fences.\n\n"
+            f"Fixes:\n{_bug_lines_prompt(gblist)}\n\n"
+        ]
+        if context:
+            prompt_parts.append(f"Context: {context}\n\n")
+        prompt_parts.append(f"Snippet:\n{snippet}")
+        fixed_snippet = delegate_code("".join(prompt_parts), system=_FIX_SYSTEM, max_tokens=max_tokens)
+        if not fixed_snippet or not fixed_snippet.strip():
+            logger.warning("fix_bugs_surgical: empty response for lines %d-%d — keeping original", gs+1, ge+1)
+            continue
+        fixed_lines = fixed_snippet.splitlines(keepends=True)
+        if not fixed_lines[-1].endswith("\n"):
+            fixed_lines[-1] += "\n"
+        result_lines[gs:ge + 1] = fixed_lines
+        logger.info("fix_bugs_surgical: patched lines %d-%d (%d bugs)", gs+1, ge+1, len(gblist))
+
+    return "".join(result_lines)
+
+
 def fix_bugs(code: str, bugs: list[dict], context: str = "", max_tokens: int = 4096) -> str:
     """
     Apply a list of bug fixes (from review_project output) to source code.
+    Automatically uses surgical (chunk) mode for large files.
 
     Args:
         code:    Python source code to fix
@@ -257,20 +372,53 @@ def fix_bugs(code: str, bugs: list[dict], context: str = "", max_tokens: int = 4
         critical = [b for b in result["bugs"] if b["severity"] in ("critical", "high")]
         fixed = fix_bugs(open("bot.py").read(), critical)
     """
-    _check_size(code, "fix_bugs input")
-    bug_lines = []
-    for i, b in enumerate(bugs, 1):
-        loc = f"{b.get('file', '?')}:{b.get('line', '?')}"
-        bug_lines.append(
-            f"{i}. [{b.get('severity','?').upper()}] {loc} — {b.get('description','')}"
-            + (f"\n   FIX: {b['remediation']}" if b.get("remediation") else "")
-        )
-    fix_list = "\n".join(bug_lines)
+    if len(code) > _MAX_INPUT_CHARS:
+        logger.info("fix_bugs: large file (%d chars) — switching to surgical mode", len(code))
+        return fix_bugs_surgical(code, bugs, context=context, max_tokens=max(max_tokens, 8192))
+
+    fix_list = _bug_lines_prompt(bugs)
     parts = [f"Apply these fixes:\n{fix_list}\n\n"]
     if context:
         parts.append(f"Additional context: {context}\n\n")
     parts.append(f"Code:\n\n{code}")
     return delegate_code("".join(parts), system=_FIX_SYSTEM, max_tokens=max_tokens)
+
+
+def _chunk_summarize(code: str, filename: str, max_tokens: int) -> str:
+    """Summarize a large file by chunking, summarizing each chunk, then synthesizing."""
+    chunk_size = 35_000
+    lines = code.splitlines(keepends=True)
+    chunks: list[str] = []
+    current: list[str] = []
+    current_len = 0
+    for line in lines:
+        if current_len + len(line) > chunk_size and current:
+            chunks.append("".join(current))
+            current = []
+            current_len = 0
+        current.append(line)
+        current_len += len(line)
+    if current:
+        chunks.append("".join(current))
+
+    chunk_digests = []
+    for i, chunk in enumerate(chunks):
+        header = f"File: {filename} (part {i+1}/{len(chunks)})\n\n"
+        digest = delegate_code(f"{header}{chunk}", system=_SUMMARIZE_SYSTEM, max_tokens=max_tokens)
+        chunk_digests.append(digest)
+
+    if len(chunk_digests) == 1:
+        return chunk_digests[0]
+
+    combined = "\n\n---\n\n".join(
+        f"[Part {i+1}]\n{d}" for i, d in enumerate(chunk_digests)
+    )
+    synthesis_prompt = (
+        f"File: {filename}\n\n"
+        f"Below are summaries of {len(chunks)} chunks of the same file. "
+        f"Produce ONE unified compact digest covering the full file.\n\n{combined}"
+    )
+    return delegate_code(synthesis_prompt, system=_SUMMARIZE_SYSTEM, max_tokens=max_tokens)
 
 
 def summarize_file(code: str, filename: str = "", max_tokens: int = 1024) -> str:
@@ -289,7 +437,9 @@ def summarize_file(code: str, filename: str = "", max_tokens: int = 1024) -> str
         digest = summarize_file(open("alpaca_bot.py").read(), "alpaca_bot.py")
         # Pass digest to Claude instead of the full 400-line file
     """
-    _check_size(code, "summarize_file input")
+    if len(code) > _MAX_INPUT_CHARS:
+        logger.info("summarize_file: %s is %d chars — auto-chunking", filename or "input", len(code))
+        return _chunk_summarize(code, filename, max_tokens)
     header = f"File: {filename}\n\n" if filename else ""
     return delegate_code(
         f"{header}{code}",
