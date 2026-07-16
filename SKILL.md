@@ -155,9 +155,63 @@ python3 scripts/review.py commit-msg "optional context hint"
 
 ---
 
+## REQUIRED OUTPUT CONTRACT
+
+Every Mr_Deepseeker task MUST return a structured JSON handoff. Do not return freeform prose to Claude.
+
+Investigation tasks:
+
+```json
+{
+  "objective": "what was investigated",
+  "summary": "2-3 sentence finding",
+  "root_cause": "specific cause if found, else null",
+  "confidence": 0.0,
+  "affected_files": ["relative/path/file.py"],
+  "affected_functions": ["module.function_name"],
+  "evidence": ["snippet or log line supporting the finding"],
+  "recommended_actions": ["concrete action 1", "concrete action 2"],
+  "risk_level": "low|medium|high|critical",
+  "requires_claude_review": false,
+  "handoff": null
+}
+```
+
+Code tasks:
+
+```json
+{
+  "files_modified": [],
+  "changes_made": [],
+  "tests_added": [],
+  "known_risks": [],
+  "rollback_strategy": "",
+  "confidence": 0.0,
+  "requires_claude_review": false,
+  "handoff": null
+}
+```
+
+`handoff`: optional next-agent recommendation ("coder" | "debugger" | "architect" |
+"code-reviewer" | null) — the main session dispatches; workers never spawn agents.
+
+Set `requires_claude_review: true` when:
+- `risk_level` is "high" or "critical"
+- affects trading execution, concurrency, auth, or money
+- confidence < 0.6
+- finding contradicts known architecture
+
+Claude only reads this contract — NOT the raw files or logs.
+
 ## Notes
-- DeepSeek key: `DEEPSEEK_API_KEY` env var or `.env` in repo root
+- DeepSeek key: `DEEPSEEK_API_KEY` env var or `.env` in repo root; `load_env()` also
+  falls back to `~/.deepseek_key` / `~/.openrouter_key` / `~/.openai_key` / `~/.groq_key`
+- Code-returning functions auto-strip markdown fences; full-file ops (`refactor`,
+  `add_type_hints`, `write_docstrings`, `fix_bugs`, `expand_stub`, `translate`)
+  auto-scale max_tokens to input size (cap 8192) and warn when a file is too big to
+  return whole — use `fix_bugs_surgical` then
+- Review bug `line` numbers are int-coerced so `fix_bugs_surgical` can locate them
 - `review_all()` runs up to 3 projects in parallel — allow ~45s for 7 projects
-- Fallback chain: DeepSeek → Ollama (local) → OpenRouter → Groq — one key is enough
+- Fallback chain: DeepSeek → OpenRouter → Groq — one key is enough (Ollama removed, deprecated)
 - Bad JSON from brain = safe HOLD returned (no crash, no trades)
 - `summarize_file` is cheap (max_tokens=1024) — use liberally to save Claude context

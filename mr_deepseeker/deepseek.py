@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,7 +24,7 @@ logger = logging.getLogger(__name__)
 _SKIP_EXTENSIONS = {".pyc", ".log", ".db", ".json", ".txt", ".md", ".env"}
 _SKIP_DIRS = {"__pycache__", ".git", "venv", ".venv", "node_modules"}
 
-_REVIEW_SYSTEM = """You are an expert Python code reviewer specialising in trading systems.
+_REVIEW_SYSTEM = """You are an expert Python code reviewer for trading systems.
 Analyse code for: (1) logical errors (2) race conditions (3) unhandled edge cases
 (4) dead code (5) performance risks (6) reliability failures.
 Output ONLY valid JSON. No markdown. No text outside the JSON object.
@@ -38,7 +37,8 @@ Return this schema:
       "severity": "critical|high|medium|low",
       "file": "file.py",
       "line": 42,
-      "category": "race_condition|logic_error|unhandled_exception|dead_code|performance|reliability",
+      "category":
+        "race_condition|logic_error|unhandled_exception|dead_code|performance|reliability",
       "description": "What is wrong",
       "remediation": "How to fix it"
     }
@@ -47,7 +47,7 @@ Return this schema:
   "dead_code_fragments": [{"file": "f.py", "lines": "10-20", "function": "foo"}]
 }"""
 
-_BRAIN_SYSTEM = """You are a real-time trading decision engine for a multi-bot algorithmic trading system.
+_BRAIN_SYSTEM = """You are a real-time trading decision engine for a multi-bot system.
 
 Rules you MUST follow:
 - Output ONLY valid JSON. No text outside the JSON object.
@@ -83,7 +83,10 @@ def _load_folder(path: str | Path, max_files: int = 20) -> dict[str, str]:
         try:
             content = f.read_text(errors="replace")
             if "�" in content:
-                logger.warning("Non-UTF8 bytes replaced in %s — LLM may see garbled content", f.name)
+                logger.warning(
+                    "Non-UTF8 bytes replaced in %s — LLM may see garbled content",
+                    f.name,
+                )
             files[str(f.relative_to(root))] = content
         except (OSError, PermissionError, UnicodeError) as e:
             logger.warning("Could not read %s: %s", f, e)
@@ -94,7 +97,7 @@ _MAX_LINES_PER_FILE = 300
 
 
 def _truncate_at_boundary(lines: list[str], limit: int) -> list[str]:
-    """Truncate at the last top-level def/class before the limit — avoids cutting mid-function."""
+    """Truncate at the last top-level def/class before limit — no mid-function cut."""
     if len(lines) <= limit:
         return lines
     cut = limit
@@ -114,7 +117,10 @@ def _build_prompt(files: dict[str, str], context: str = "") -> str:
         lines = src.splitlines()
         if len(lines) > _MAX_LINES_PER_FILE:
             truncated = _truncate_at_boundary(lines, _MAX_LINES_PER_FILE)
-            logger.warning("%s truncated to %d lines at logical boundary (was %d)", name, len(truncated), len(lines))
+            logger.warning(
+                "%s truncated to %d lines at logical boundary (was %d)",
+                name, len(truncated), len(lines),
+            )
             src = "\n".join(truncated) + f"\n# ... truncated ({len(lines)} lines total)"
         parts.append(f"\n### {name}\n```python\n{src}\n```")
     return "".join(parts)
@@ -135,9 +141,8 @@ def _extract_objects(raw: str) -> list[dict]:
             if depth == 0 and start is not None:
                 try:
                     obj = json.loads(raw[start:i + 1])
-                    if isinstance(obj, dict) and any(
-                        k in obj for k in ("description", "issue", "severity", "bugs", "decisions")
-                    ):
+                    keys = ("description", "issue", "severity", "bugs", "decisions")
+                    if isinstance(obj, dict) and any(k in obj for k in keys):
                         objects.append(obj)
                 except json.JSONDecodeError:
                     pass
@@ -157,25 +162,39 @@ def _parse_json(raw: str) -> Any:
     except json.JSONDecodeError:
         objects = _extract_objects(raw)
         if not objects:
-            logger.warning("_parse_json: could not extract any JSON objects from response (len=%d)", len(raw))
+            logger.warning(
+                "_parse_json: no JSON objects extracted from response (len=%d)",
+                len(raw),
+            )
         return objects
 
 
 def _normalise(parsed: Any) -> dict[str, Any]:
     """Normalise DeepSeek review output to consistent shape."""
 
+    def _to_int(v: Any) -> int | None:
+        try:
+            return int(str(v).strip())
+        except (TypeError, ValueError):
+            return None
+
     def _to_bug(item: dict, fallback_file: str = "") -> dict:
         loc = item.get("location", "")
         loc_file = loc.split(":")[0].split(" ")[0] if ":" in loc else ""
+        # int-coerce line so fix_bugs_surgical can locate it (often a string)
+        line = _to_int(item.get("line"))
+        if line is None and ":" in loc:
+            line = _to_int(loc.split(":")[1])
         return {
             "severity":    (item.get("severity") or "medium").lower(),
             "file":        item.get("file") or loc_file or fallback_file,
-            "line":        item.get("line") or (loc.split(":")[1] if ":" in loc else None),
+            "line":        line,
             "category":    item.get("category") or item.get("code", "logic_error"),
             "description": (item.get("description") or item.get("issue")
                             or item.get("message") or item.get("summary", "")),
             "remediation": (item.get("remediation") or item.get("fix")
-                            or item.get("suggested_fix") or item.get("recommendation", "")),
+                            or item.get("suggested_fix")
+                            or item.get("recommendation", "")),
         }
 
     bugs: list[dict] = []
@@ -197,7 +216,8 @@ def _normalise(parsed: Any) -> dict[str, Any]:
                 "reliability_risks": [], "dead_code_fragments": []}
 
     if not isinstance(parsed, dict):
-        return {"files_reviewed": [], "bugs": [], "reliability_risks": [], "dead_code_fragments": []}
+        return {"files_reviewed": [], "bugs": [],
+                "reliability_risks": [], "dead_code_fragments": []}
 
     # Maps DeepSeek's plural category keys → (severity, singular schema category)
     _CATEGORY_MAP: dict[str, tuple[str, str]] = {
@@ -223,12 +243,15 @@ def _normalise(parsed: Any) -> dict[str, Any]:
         for r in parsed.get("reliability_risks", []):
             risks.append(r if isinstance(r, str) else str(r))
         return {"files_reviewed": sorted(files_seen), "bugs": bugs,
-                "reliability_risks": risks, "dead_code_fragments": parsed.get("dead_code", [])}
+                "reliability_risks": risks,
+                "dead_code_fragments": parsed.get("dead_code", [])}
 
     return parsed
 
 
-def review_project(path: str | Path, context: str = "", max_files: int = 20) -> dict[str, Any]:
+def review_project(
+    path: str | Path, context: str = "", max_files: int = 20
+) -> dict[str, Any]:
     """
     Audit a folder of Python files with DeepSeek.
 
@@ -240,7 +263,8 @@ def review_project(path: str | Path, context: str = "", max_files: int = 20) -> 
     Returns:
         {
           "files_reviewed": [...],
-          "bugs": [{"severity", "file", "line", "category", "description", "remediation"}],
+          "bugs": [{"severity", "file", "line", "category", "description",
+                    "remediation"}],
           "reliability_risks": [...],
           "dead_code_fragments": [...]
         }
@@ -285,7 +309,7 @@ def review_all(
             result["name"] = name
             return name, result
         except ValueError as e:
-            # Config error (bad path, no files) — return clean error dict, don't re-raise
+            # Config error (bad path, no files) — clean error dict, don't re-raise
             logger.error("%s config error: %s", name, e)
             return name, {"error": str(e), "name": name, "config_error": True}
         except Exception as e:
@@ -299,7 +323,9 @@ def review_all(
                 name, report = future.result()
             except Exception as e:
                 name = futures[future]
-                logger.error("%s future raised unexpectedly: %s", name, e, exc_info=True)
+                logger.error(
+                    "%s future raised unexpectedly: %s", name, e, exc_info=True
+                )
                 report = {"error": str(e), "name": name}
             reports[name] = report
             if "error" not in report:
@@ -328,7 +354,7 @@ class TradingState:
     """
     Full system state snapshot passed to DeepSeek each decision cycle.
 
-    regime:       market regime dict (e.g. {"regime": "BULL_TREND", "confidence": "HIGH"})
+    regime:       market regime dict (e.g. {"regime": "BULL_TREND"})
     macro_signal: macro context dict (e.g. {"overall": "bullish", "sources": {}})
     signals:      list of {bot, ticker, strength 0-1, side BUY/SELL}
     exposure:     {total: 0.0-1.0, bot_breakdown: {BOT: float}}
@@ -391,15 +417,20 @@ def trading_brain(state: TradingState) -> dict[str, Any]:
     try:
         parsed = _parse_json(raw)
         if isinstance(parsed, list):
-            parsed = {"decisions": parsed, "no_action": [], "watchdog_note": "", "risk_checks": {}}
+            parsed = {"decisions": parsed, "no_action": [],
+                      "watchdog_note": "", "risk_checks": {}}
         if not isinstance(parsed, dict):
             raise ValueError(f"Unexpected response type: {type(parsed)}")
         return parsed
     except Exception as e:
-        logger.error("trading_brain: bad response from DeepSeek — safe HOLD. Error: %s", e)
+        logger.error(
+            "trading_brain: bad response from DeepSeek — safe HOLD. Error: %s", e
+        )
         return {
             "decisions": [],
             "no_action": all_bots,
-            "watchdog_note": f"DeepSeek returned unparseable response — safe HOLD. Error: {e}",
+            "watchdog_note": (
+                f"DeepSeek returned unparseable response — safe HOLD. Error: {e}"
+            ),
             "risk_checks": {},
         }

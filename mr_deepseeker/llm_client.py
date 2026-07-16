@@ -2,7 +2,8 @@
 """
 LLM delegation client — tries providers in priority order until one succeeds.
 
-Priority: DeepSeek(direct) → OpenRouter(deepseek-chat) → OpenAI → OpenRouter(free) → Groq
+Priority: DeepSeek(direct) → OpenRouter(deepseek-chat) → OpenAI → OpenRouter(free)
+→ Groq
 
 Set API keys in .env or environment variables. DeepSeek is the cheapest
 and most capable for code review tasks. OpenRouter acts as resilient fallback
@@ -52,7 +53,9 @@ def _call(url: str, api_key: str, model: str, prompt: str,
     if system:
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
-    body = json.dumps({"model": model, "messages": messages, "max_tokens": max_tokens}).encode()
+    body = json.dumps(
+        {"model": model, "messages": messages, "max_tokens": max_tokens}
+    ).encode()
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
@@ -73,10 +76,14 @@ def _call(url: str, api_key: str, model: str, prompt: str,
             if e.code < 500:
                 raise  # 4xx — client error, no point retrying
             last_exc = e
-            logger.warning("HTTP %d from %s (attempt %d/%d)", e.code, url, attempt + 1, retries)
+            logger.warning(
+                "HTTP %d from %s (attempt %d/%d)", e.code, url, attempt + 1, retries
+            )
         except (urllib.error.URLError, TimeoutError, OSError) as e:
             last_exc = e
-            logger.warning("Network error %s (attempt %d/%d): %s", url, attempt + 1, retries, e)
+            logger.warning(
+                "Network error %s (attempt %d/%d): %s", url, attempt + 1, retries, e
+            )
 
         if attempt < retries - 1:
             backoff = (2 ** attempt) + random.uniform(0, 1)
@@ -97,7 +104,7 @@ def deepseek_ask(prompt: str, system: str = "", max_tokens: int = 4096,
 def delegate_code(prompt: str, system: str = "", max_tokens: int = 4096) -> str:
     """
     Send prompt to best available LLM. Chain: DeepSeek → OpenAI → OpenRouter → Groq.
-    Semaphore-gated to max 2 concurrent outbound calls (safe for review_all parallelism).
+    Semaphore-gated to max 2 concurrent outbound calls (safe for review_all).
     Raises RuntimeError if all providers fail.
     """
     with _API_SEMAPHORE:

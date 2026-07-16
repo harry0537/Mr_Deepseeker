@@ -17,6 +17,34 @@ from mr_deepseeker.llm_client import delegate_code
 logger = logging.getLogger(__name__)
 
 _MAX_INPUT_CHARS = 40_000  # ~10k tokens — warn above this
+_MAX_OUTPUT_TOKENS = 8192  # deepseek-chat hard output cap
+
+
+def _strip_fences(text: str) -> str:
+    """Strip a wrapping markdown code fence the model added despite instructions."""
+    t = text.strip()
+    if not t.startswith("```"):
+        return text
+    first_nl = t.find("\n")
+    if first_nl == -1:
+        return text
+    body = t[first_nl + 1:]
+    stripped = body.rstrip()
+    if stripped.endswith("```"):
+        body = stripped[:-3].rstrip("\n") + "\n"
+    return body
+
+
+def _full_file_max_tokens(code: str, requested: int) -> int:
+    """Full-file ops must fit the whole file in the response — scale cap to input."""
+    needed = len(code) // 3 + 512
+    if needed > _MAX_OUTPUT_TOKENS:
+        logger.warning(
+            "Input (%d chars) likely exceeds the %d-token output cap — full-file "
+            "result may truncate. Use fix_bugs_surgical or split the file.",
+            len(code), _MAX_OUTPUT_TOKENS,
+        )
+    return min(_MAX_OUTPUT_TOKENS, max(requested, needed))
 
 
 def _check_size(code: str, label: str = "input") -> None:
@@ -59,11 +87,13 @@ def generate(task: str, language: str = "python", max_tokens: int = 4096) -> str
         Generated code as a string.
 
     Example:
-        code = generate("dataclass for a trade order with BUY/SELL enum, price, quantity, timestamp")
+        code = generate("dataclass for a trade order: BUY/SELL enum, price, qty, ts")
         print(code)
     """
     prompt = f"Language: {language}\n\nTask: {task}"
-    return delegate_code(prompt, system=_CODE_SYSTEM, max_tokens=max_tokens)
+    return _strip_fences(
+        delegate_code(prompt, system=_CODE_SYSTEM, max_tokens=max_tokens)
+    )
 
 
 def expand_stub(code: str, context: str = "", max_tokens: int = 4096) -> str:
@@ -90,7 +120,10 @@ def expand_stub(code: str, context: str = "", max_tokens: int = 4096) -> str:
     if context:
         parts.append(f"Requirements: {context}\n\n")
     parts.append(f"Complete this implementation:\n\n{code}")
-    return delegate_code("".join(parts), system=_CODE_SYSTEM, max_tokens=max_tokens)
+    max_tokens = _full_file_max_tokens(code, max_tokens)
+    return _strip_fences(
+        delegate_code("".join(parts), system=_CODE_SYSTEM, max_tokens=max_tokens)
+    )
 
 
 def write_tests(code: str, context: str = "", max_tokens: int = 4096) -> str:
@@ -99,7 +132,7 @@ def write_tests(code: str, context: str = "", max_tokens: int = 4096) -> str:
 
     Args:
         code:    source code to test
-        context: optional hints (e.g. "mock the external API calls", "include edge cases")
+        context: optional hints (e.g. "mock external API calls", "include edge cases")
 
     Returns:
         pytest test file as a string.
@@ -113,7 +146,9 @@ def write_tests(code: str, context: str = "", max_tokens: int = 4096) -> str:
     if context:
         parts.append(f"Testing requirements: {context}\n\n")
     parts.append(f"Write a complete pytest test suite for:\n\n{code}")
-    return delegate_code("".join(parts), system=_TEST_SYSTEM, max_tokens=max_tokens)
+    return _strip_fences(
+        delegate_code("".join(parts), system=_TEST_SYSTEM, max_tokens=max_tokens)
+    )
 
 
 def write_docstrings(code: str, max_tokens: int = 4096) -> str:
@@ -132,14 +167,16 @@ def write_docstrings(code: str, max_tokens: int = 4096) -> str:
         open("utils.py", "w").write(documented)
     """
     _check_size(code, "write_docstrings input")
-    return delegate_code(
+    return _strip_fences(delegate_code(
         f"Add docstrings to all undocumented functions and classes:\n\n{code}",
         system=_DOCSTRING_SYSTEM,
-        max_tokens=max_tokens,
-    )
+        max_tokens=_full_file_max_tokens(code, max_tokens),
+    ))
 
 
-def translate(code: str, target_language: str, context: str = "", max_tokens: int = 4096) -> str:
+def translate(
+    code: str, target_language: str, context: str = "", max_tokens: int = 4096
+) -> str:
     """
     Rewrite code in another language, preserving logic exactly.
 
@@ -159,7 +196,10 @@ def translate(code: str, target_language: str, context: str = "", max_tokens: in
     if context:
         parts.append(f" ({context})")
     parts.append(f":\n\n{code}")
-    return delegate_code("".join(parts), system=_CODE_SYSTEM, max_tokens=max_tokens)
+    max_tokens = _full_file_max_tokens(code, max_tokens)
+    return _strip_fences(
+        delegate_code("".join(parts), system=_CODE_SYSTEM, max_tokens=max_tokens)
+    )
 
 
 _REFACTOR_SYSTEM = (
@@ -170,27 +210,31 @@ _REFACTOR_SYSTEM = (
 
 _TYPE_HINT_SYSTEM = (
     "You are a Python typing expert. "
-    "Add PEP 484 type annotations to all function signatures and variable assignments that lack them. "
+    "Add PEP 484 type annotations to all function signatures and variable "
+    "assignments that lack them. "
     "Do not change any logic. Return the COMPLETE annotated file. No markdown fences."
 )
 
 _FIX_SYSTEM = (
     "You are an expert Python bug fixer. "
-    "Apply ALL listed fixes to the code. Do not change anything not mentioned in the fix list. "
+    "Apply ALL listed fixes to the code. "
+    "Do not change anything not mentioned in the fix list. "
     "Return the COMPLETE fixed file. No explanation, no markdown fences."
 )
 
 _SUMMARIZE_SYSTEM = (
-    "You are a code summarizer. Given Python source code, produce a compact technical digest "
-    "that another AI can use to understand the file without reading it in full. "
-    "Include: purpose, public API (functions/classes with signatures + one-line description), "
+    "You are a code summarizer. Given Python source code, produce a compact "
+    "technical digest that another AI can use to understand the file without "
+    "reading it in full. "
+    "Include: purpose, public API (functions/classes, signatures, one-liner), "
     "key dependencies, important constants/config, known gotchas. "
     "Be terse. Max 40 lines. Plain text, no markdown."
 )
 
 _COMMIT_SYSTEM = (
     "You are a git commit message writer. "
-    "Given a git diff, write a concise imperative-mood commit message (subject line ≤72 chars). "
+    "Given a git diff, write a concise imperative-mood commit message "
+    "(subject line ≤72 chars). "
     "Optionally add a bullet-point body if the diff is complex. "
     "Do NOT include Co-Authored-By lines. Return ONLY the commit message text."
 )
@@ -202,7 +246,7 @@ def refactor(code: str, instructions: str, max_tokens: int = 4096) -> str:
 
     Args:
         code:         Python source to refactor
-        instructions: what to change (e.g. "rename foo→bar, extract helper for lines 40-60")
+        instructions: what to change (e.g. "rename foo→bar, extract helper 40-60")
 
     Returns:
         Refactored code as a string.
@@ -211,11 +255,11 @@ def refactor(code: str, instructions: str, max_tokens: int = 4096) -> str:
         new_code = refactor(src, "rename _internal_calc to _kelly_calc everywhere")
     """
     _check_size(code, "refactor input")
-    return delegate_code(
+    return _strip_fences(delegate_code(
         f"Instructions: {instructions}\n\nCode:\n\n{code}",
         system=_REFACTOR_SYSTEM,
-        max_tokens=max_tokens,
-    )
+        max_tokens=_full_file_max_tokens(code, max_tokens),
+    ))
 
 
 def add_type_hints(code: str, max_tokens: int = 4096) -> str:
@@ -233,11 +277,11 @@ def add_type_hints(code: str, max_tokens: int = 4096) -> str:
         open("utils.py", "w").write(typed)
     """
     _check_size(code, "add_type_hints input")
-    return delegate_code(
+    return _strip_fences(delegate_code(
         f"Add type hints to this Python file:\n\n{code}",
         system=_TYPE_HINT_SYSTEM,
-        max_tokens=max_tokens,
-    )
+        max_tokens=_full_file_max_tokens(code, max_tokens),
+    ))
 
 
 def _bug_lines_prompt(bugs: list[dict]) -> str:
@@ -251,8 +295,10 @@ def _bug_lines_prompt(bugs: list[dict]) -> str:
     return "\n".join(parts)
 
 
-def _extract_enclosing_function(lines: list[str], target_1idx: int, pad: int = 10) -> tuple[int, int]:
-    """Return (start, end) 0-indexed line range covering the function around target_1idx."""
+def _extract_enclosing_function(
+    lines: list[str], target_1idx: int, pad: int = 10
+) -> tuple[int, int]:
+    """Return (start, end) 0-indexed range of the function around target_1idx."""
     n = len(lines)
     t = min(target_1idx - 1, n - 1)
 
@@ -264,7 +310,7 @@ def _extract_enclosing_function(lines: list[str], target_1idx: int, pad: int = 1
             func_start = i
             break
 
-    # Walk forward: stop when we hit a same-or-lower indent def/class after the body starts
+    # Walk forward: stop at a same-or-lower indent def/class after the body starts
     func_indent = len(lines[func_start]) - len(lines[func_start].lstrip())
     func_end = min(n - 1, t + pad)
     for i in range(func_start + 2, n):
@@ -281,7 +327,9 @@ def _extract_enclosing_function(lines: list[str], target_1idx: int, pad: int = 1
     return max(0, func_start - 3), min(n - 1, func_end + 3)
 
 
-def fix_bugs_surgical(code: str, bugs: list[dict], context: str = "", max_tokens: int = 8192) -> str:
+def fix_bugs_surgical(
+    code: str, bugs: list[dict], context: str = "", max_tokens: int = 8192
+) -> str:
     """
     Fix bugs by sending only the affected code sections to DeepSeek.
     Safe for large files that exceed token limits in full-file mode.
@@ -301,16 +349,22 @@ def fix_bugs_surgical(code: str, bugs: list[dict], context: str = "", max_tokens
     lines = code.splitlines(keepends=True)
     n = len(lines)
 
-    # Collect (line_number_1idx, bug) pairs, skip bugs with no line
+    # Collect (line_number_1idx, bug) pairs, skip bugs with no line.
+    # Line numbers often arrive as strings (parsed from "file.py:42") — coerce.
     located: list[tuple[int, dict]] = []
     for b in bugs:
-        ln = b.get("line")
-        if ln and isinstance(ln, int) and 1 <= ln <= n:
+        try:
+            ln = int(str(b.get("line")).strip())
+        except (TypeError, ValueError):
+            continue
+        if 1 <= ln <= n:
             located.append((ln, b))
 
     if not located:
         # No line info — fall back to full-file fix
-        logger.warning("fix_bugs_surgical: no line numbers — falling back to full-file fix")
+        logger.warning(
+            "fix_bugs_surgical: no line numbers — falling back to full-file fix"
+        )
         return fix_bugs(code, bugs, context=context, max_tokens=max_tokens)
 
     # Sort by line, then group bugs whose enclosing functions overlap
@@ -335,26 +389,37 @@ def fix_bugs_surgical(code: str, bugs: list[dict], context: str = "", max_tokens
         prompt_parts = [
             f"Apply these fixes to the code snippet below.\n"
             f"This is lines {gs+1}–{ge+1} of the file.\n"
-            f"Return ONLY the fixed snippet — same line range, no extra lines, no fences.\n\n"
+            f"Return ONLY the fixed snippet — same line range, no extra lines, "
+            f"no fences.\n\n"
             f"Fixes:\n{_bug_lines_prompt(gblist)}\n\n"
         ]
         if context:
             prompt_parts.append(f"Context: {context}\n\n")
         prompt_parts.append(f"Snippet:\n{snippet}")
-        fixed_snippet = delegate_code("".join(prompt_parts), system=_FIX_SYSTEM, max_tokens=max_tokens)
+        fixed_snippet = _strip_fences(delegate_code(
+            "".join(prompt_parts), system=_FIX_SYSTEM, max_tokens=max_tokens
+        ))
         if not fixed_snippet or not fixed_snippet.strip():
-            logger.warning("fix_bugs_surgical: empty response for lines %d-%d — keeping original", gs+1, ge+1)
+            logger.warning(
+                "fix_bugs_surgical: empty response for lines %d-%d — keeping original",
+                gs + 1, ge + 1,
+            )
             continue
         fixed_lines = fixed_snippet.splitlines(keepends=True)
         if not fixed_lines[-1].endswith("\n"):
             fixed_lines[-1] += "\n"
         result_lines[gs:ge + 1] = fixed_lines
-        logger.info("fix_bugs_surgical: patched lines %d-%d (%d bugs)", gs+1, ge+1, len(gblist))
+        logger.info(
+            "fix_bugs_surgical: patched lines %d-%d (%d bugs)",
+            gs + 1, ge + 1, len(gblist),
+        )
 
     return "".join(result_lines)
 
 
-def fix_bugs(code: str, bugs: list[dict], context: str = "", max_tokens: int = 4096) -> str:
+def fix_bugs(
+    code: str, bugs: list[dict], context: str = "", max_tokens: int = 4096
+) -> str:
     """
     Apply a list of bug fixes (from review_project output) to source code.
     Automatically uses surgical (chunk) mode for large files.
@@ -373,15 +438,22 @@ def fix_bugs(code: str, bugs: list[dict], context: str = "", max_tokens: int = 4
         fixed = fix_bugs(open("bot.py").read(), critical)
     """
     if len(code) > _MAX_INPUT_CHARS:
-        logger.info("fix_bugs: large file (%d chars) — switching to surgical mode", len(code))
-        return fix_bugs_surgical(code, bugs, context=context, max_tokens=max(max_tokens, 8192))
+        logger.info(
+            "fix_bugs: large file (%d chars) — switching to surgical mode", len(code)
+        )
+        return fix_bugs_surgical(
+            code, bugs, context=context, max_tokens=max(max_tokens, 8192)
+        )
 
     fix_list = _bug_lines_prompt(bugs)
     parts = [f"Apply these fixes:\n{fix_list}\n\n"]
     if context:
         parts.append(f"Additional context: {context}\n\n")
     parts.append(f"Code:\n\n{code}")
-    return delegate_code("".join(parts), system=_FIX_SYSTEM, max_tokens=max_tokens)
+    max_tokens = _full_file_max_tokens(code, max_tokens)
+    return _strip_fences(
+        delegate_code("".join(parts), system=_FIX_SYSTEM, max_tokens=max_tokens)
+    )
 
 
 def _chunk_summarize(code: str, filename: str, max_tokens: int) -> str:
@@ -404,7 +476,9 @@ def _chunk_summarize(code: str, filename: str, max_tokens: int) -> str:
     chunk_digests = []
     for i, chunk in enumerate(chunks):
         header = f"File: {filename} (part {i+1}/{len(chunks)})\n\n"
-        digest = delegate_code(f"{header}{chunk}", system=_SUMMARIZE_SYSTEM, max_tokens=max_tokens)
+        digest = delegate_code(
+            f"{header}{chunk}", system=_SUMMARIZE_SYSTEM, max_tokens=max_tokens
+        )
         chunk_digests.append(digest)
 
     if len(chunk_digests) == 1:
@@ -418,7 +492,9 @@ def _chunk_summarize(code: str, filename: str, max_tokens: int) -> str:
         f"Below are summaries of {len(chunks)} chunks of the same file. "
         f"Produce ONE unified compact digest covering the full file.\n\n{combined}"
     )
-    return delegate_code(synthesis_prompt, system=_SUMMARIZE_SYSTEM, max_tokens=max_tokens)
+    return delegate_code(
+        synthesis_prompt, system=_SUMMARIZE_SYSTEM, max_tokens=max_tokens
+    )
 
 
 def summarize_file(code: str, filename: str = "", max_tokens: int = 1024) -> str:
@@ -438,7 +514,10 @@ def summarize_file(code: str, filename: str = "", max_tokens: int = 1024) -> str
         # Pass digest to Claude instead of the full 400-line file
     """
     if len(code) > _MAX_INPUT_CHARS:
-        logger.info("summarize_file: %s is %d chars — auto-chunking", filename or "input", len(code))
+        logger.info(
+            "summarize_file: %s is %d chars — auto-chunking",
+            filename or "input", len(code),
+        )
         return _chunk_summarize(code, filename, max_tokens)
     header = f"File: {filename}\n\n" if filename else ""
     return delegate_code(
