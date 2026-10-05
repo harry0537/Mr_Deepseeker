@@ -10,7 +10,10 @@ write_docstrings(code)   — add docstrings to all functions in a file
 translate(code, lang)    — rewrite code in another language
 """
 from __future__ import annotations
+import ast
 import logging
+import re
+from collections import Counter
 
 from mr_deepseeker.llm_client import delegate_code
 
@@ -18,6 +21,9 @@ logger = logging.getLogger(__name__)
 
 _MAX_INPUT_CHARS = 40_000  # ~10k tokens — warn above this
 _MAX_OUTPUT_TOKENS = 8192  # deepseek-chat hard output cap
+# House rule: no worker rewrites a file above this many lines whole. Bigger files
+# go through _splice (one line range at a time) or the caller gets an error.
+_MAX_WHOLE_FILE_LINES = 300
 
 
 def _strip_fences(text: str) -> str:
@@ -54,6 +60,115 @@ def _check_size(code: str, label: str = "input") -> None:
             "Consider splitting into smaller chunks.",
             label, len(code)
         )
+
+def _too_big_for_whole_file(code: str) -> bool:
+    return len(code.splitlines()) > _MAX_WHOLE_FILE_LINES
+
+
+def _check_python(result: str, original: str, what: str) -> str:
+    """Refuse model output that no longer parses — the caller gets nothing to write.
+
+    Skipped when the original did not parse either: there is no baseline to hold
+    the edit to, and refusing would make broken files unfixable.
+    """
+    try:
+        ast.parse(original)
+    except SyntaxError:
+        logger.warning("%s: original does not parse — syntax guard skipped", what)
+        return result
+    try:
+        ast.parse(result)
+    except SyntaxError as e:
+        raise ValueError(
+            f"{what}: model output is not valid Python "
+            f"(line {e.lineno}: {e.msg}) — nothing applied"
+        ) from e
+    return result
+
+
+_DEF_RE = re.compile(r"^\s*(?:async\s+)?(?:def|class)\s+(\w+)", re.MULTILINE)
+
+
+def _def_names(src: str) -> Counter[str]:
+    # Counter, not set: two classes' __init__ collapse to one set member, so
+    # dropping one of them would pass the guard.
+    return Counter(_DEF_RE.findall(src))
+
+
+def _edge_blanks(lines: list[str], tail: bool = False) -> list[str]:
+    seq = reversed(lines) if tail else iter(lines)
+    blanks = []
+    for ln in seq:
+        if ln.strip():
+            break
+        blanks.append(ln)
+    return blanks[::-1] if tail else blanks
+
+
+def _strip_edge_blanks(lines: list[str]) -> list[str]:
+    start, end = 0, len(lines)
+    while start < end and not lines[start].strip():
+        start += 1
+    while end > start and not lines[end - 1].strip():
+        end -= 1
+    return lines[start:end]
+
+
+def _splice(
+    code: str, start0: int, end0: int, request: str, max_tokens: int, what: str
+) -> str:
+    """Send lines start0..end0 (0-indexed, inclusive) with `request`, splice the
+    answer back, and return the whole file — only if it still parses."""
+    lines = code.splitlines(keepends=True)
+    snippet = "".join(lines[start0:end0 + 1])
+    out = _strip_fences(delegate_code(
+        f"{request}\n\nThis is lines {start0 + 1}-{end0 + 1} of a larger file. "
+        f"Return ONLY the rewritten snippet, same indentation.\n\n"
+        f"Snippet:\n{snippet}",
+        system=_SNIPPET_SYSTEM, max_tokens=max_tokens,
+    ))
+    if not out.strip():
+        raise ValueError(f"{what}: empty response for lines {start0 + 1}-{end0 + 1}")
+    # The window is padded past the target function, so it usually holds
+    # neighbours too. A model that answers with only the function it fixed
+    # deletes them — and the file still parses. Every def/class that went in
+    # must come back out.
+    lost = list((_def_names(snippet) - _def_names(out)).elements())
+    if lost:
+        raise ValueError(
+            f"{what}: lines {start0 + 1}-{end0 + 1} came back without "
+            f"{sorted(lost)} — nothing applied"
+        )
+    new_lines = out.splitlines(keepends=True)
+    if not new_lines[-1].endswith("\n"):
+        new_lines[-1] += "\n"
+    # Models strip blank lines at the window edges, which eats the two-line gap
+    # between top-level defs (observed live). Put the original edges back.
+    new_lines = (_edge_blanks(lines[start0:end0 + 1])
+                 + _strip_edge_blanks(new_lines)
+                 + _edge_blanks(lines[start0:end0 + 1], tail=True))
+    result = "".join(lines[:start0] + new_lines + lines[end0 + 1:])
+    return _check_python(result, code, f"{what} lines {start0 + 1}-{end0 + 1}")
+
+
+def _line_range_splice(
+    code: str, line_range: tuple[int, int], request: str, max_tokens: int, what: str
+) -> str:
+    start, end = line_range
+    n = len(code.splitlines())
+    if not 1 <= start <= end <= n:
+        raise ValueError(f"{what}: line_range {line_range} outside 1-{n}")
+    return _splice(code, start - 1, end - 1, request, max_tokens, what)
+
+
+def _refuse_whole_file(code: str, what: str) -> None:
+    if _too_big_for_whole_file(code):
+        raise ValueError(
+            f"{what}: file is {len(code.splitlines())} lines (> "
+            f"{_MAX_WHOLE_FILE_LINES}) — pass line_range=(start, end) to edit one "
+            f"section at a time; whole-file rewrites truncate and corrupt"
+        )
+
 
 _CODE_SYSTEM = (
     "You are an expert programmer. Return ONLY the requested code — "
@@ -222,6 +337,13 @@ _FIX_SYSTEM = (
     "Return the COMPLETE fixed file. No explanation, no markdown fences."
 )
 
+_SNIPPET_SYSTEM = (
+    "You are an expert Python editor working on ONE SECTION of a larger file. "
+    "Apply only the requested change to the snippet you are given. "
+    "Return ONLY that snippet, rewritten — not the whole file, keep its original "
+    "indentation. No explanation, no markdown fences."
+)
+
 _SUMMARIZE_SYSTEM = (
     "You are a code summarizer. Given Python source code, produce a compact "
     "technical digest that another AI can use to understand the file without "
@@ -240,48 +362,79 @@ _COMMIT_SYSTEM = (
 )
 
 
-def refactor(code: str, instructions: str, max_tokens: int = 4096) -> str:
+def refactor(
+    code: str,
+    instructions: str,
+    max_tokens: int = 4096,
+    line_range: tuple[int, int] | None = None,
+) -> str:
     """
     Mechanically refactor code per instructions — no logic changes.
 
     Args:
         code:         Python source to refactor
         instructions: what to change (e.g. "rename foo→bar, extract helper 40-60")
+        line_range:   (start, end) 1-indexed inclusive — rewrite only that section.
+                      REQUIRED for files over 300 lines.
 
     Returns:
-        Refactored code as a string.
+        Refactored code (full file) as a string.
+
+    Raises:
+        ValueError: file too big without line_range, or the result does not parse.
 
     Example:
         new_code = refactor(src, "rename _internal_calc to _kelly_calc everywhere")
+        new_code = refactor(src, "extract the retry loop", line_range=(120, 180))
     """
+    if line_range:
+        return _line_range_splice(
+            code, line_range, f"Refactor (no logic changes): {instructions}",
+            max(max_tokens, 4096), "refactor",
+        )
+    _refuse_whole_file(code, "refactor")
     _check_size(code, "refactor input")
-    return _strip_fences(delegate_code(
+    return _check_python(_strip_fences(delegate_code(
         f"Instructions: {instructions}\n\nCode:\n\n{code}",
         system=_REFACTOR_SYSTEM,
         max_tokens=_full_file_max_tokens(code, max_tokens),
-    ))
+    )), code, "refactor")
 
 
-def add_type_hints(code: str, max_tokens: int = 4096) -> str:
+def add_type_hints(
+    code: str, max_tokens: int = 4096, line_range: tuple[int, int] | None = None
+) -> str:
     """
     Add PEP 484 type annotations to all unannotated functions/variables.
 
     Args:
-        code: Python source code
+        code:       Python source code
+        line_range: (start, end) 1-indexed inclusive — annotate only that section.
+                    REQUIRED for files over 300 lines.
 
     Returns:
-        Same code with type hints added.
+        Same code (full file) with type hints added.
+
+    Raises:
+        ValueError: file too big without line_range, or the result does not parse.
 
     Example:
         typed = add_type_hints(open("utils.py").read())
         open("utils.py", "w").write(typed)
     """
+    if line_range:
+        return _line_range_splice(
+            code, line_range,
+            "Add PEP 484 type annotations where missing. Do not change logic.",
+            max(max_tokens, 4096), "add_type_hints",
+        )
+    _refuse_whole_file(code, "add_type_hints")
     _check_size(code, "add_type_hints input")
-    return _strip_fences(delegate_code(
+    return _check_python(_strip_fences(delegate_code(
         f"Add type hints to this Python file:\n\n{code}",
         system=_TYPE_HINT_SYSTEM,
         max_tokens=_full_file_max_tokens(code, max_tokens),
-    ))
+    )), code, "add_type_hints")
 
 
 def _bug_lines_prompt(bugs: list[dict]) -> str:
@@ -361,11 +514,17 @@ def fix_bugs_surgical(
             located.append((ln, b))
 
     if not located:
-        # No line info — fall back to full-file fix
+        # No line info. Calling fix_bugs() here recursed forever on big files
+        # (fix_bugs -> surgical -> fix_bugs ...); go straight to the full path.
+        if _too_big_for_whole_file(code):
+            raise ValueError(
+                f"fix_bugs_surgical: no bug has a usable line number and the file "
+                f"is {n} lines — add line numbers, can't rewrite it whole"
+            )
         logger.warning(
             "fix_bugs_surgical: no line numbers — falling back to full-file fix"
         )
-        return fix_bugs(code, bugs, context=context, max_tokens=max_tokens)
+        return _fix_bugs_full(code, bugs, context=context, max_tokens=max_tokens)
 
     # Sort by line, then group bugs whose enclosing functions overlap
     located.sort(key=lambda x: x[0])
@@ -381,40 +540,22 @@ def fix_bugs_surgical(
         if not merged:
             groups.append((s, e, [bug]))
 
-    # Fix each group independently and splice back
-    result_lines = list(lines)
-    # Process in reverse order so earlier line indices stay valid after splicing
+    # Fix each group independently and splice back. All-or-nothing: any group
+    # that comes back empty or unparseable raises, so the caller never writes a
+    # file with some fixes silently dropped.
+    # Reverse order so earlier line indices stay valid after splicing.
+    result = code
     for gs, ge, gblist in sorted(groups, key=lambda x: x[0], reverse=True):
-        snippet = "".join(lines[gs:ge + 1])
-        prompt_parts = [
-            f"Apply these fixes to the code snippet below.\n"
-            f"This is lines {gs+1}–{ge+1} of the file.\n"
-            f"Return ONLY the fixed snippet — same line range, no extra lines, "
-            f"no fences.\n\n"
-            f"Fixes:\n{_bug_lines_prompt(gblist)}\n\n"
-        ]
+        request = f"Apply these fixes:\n{_bug_lines_prompt(gblist)}"
         if context:
-            prompt_parts.append(f"Context: {context}\n\n")
-        prompt_parts.append(f"Snippet:\n{snippet}")
-        fixed_snippet = _strip_fences(delegate_code(
-            "".join(prompt_parts), system=_FIX_SYSTEM, max_tokens=max_tokens
-        ))
-        if not fixed_snippet or not fixed_snippet.strip():
-            logger.warning(
-                "fix_bugs_surgical: empty response for lines %d-%d — keeping original",
-                gs + 1, ge + 1,
-            )
-            continue
-        fixed_lines = fixed_snippet.splitlines(keepends=True)
-        if not fixed_lines[-1].endswith("\n"):
-            fixed_lines[-1] += "\n"
-        result_lines[gs:ge + 1] = fixed_lines
+            request += f"\n\nContext: {context}"
+        result = _splice(result, gs, ge, request, max_tokens, "fix_bugs_surgical")
         logger.info(
             "fix_bugs_surgical: patched lines %d-%d (%d bugs)",
             gs + 1, ge + 1, len(gblist),
         )
 
-    return "".join(result_lines)
+    return result
 
 
 def fix_bugs(
@@ -437,23 +578,30 @@ def fix_bugs(
         critical = [b for b in result["bugs"] if b["severity"] in ("critical", "high")]
         fixed = fix_bugs(open("bot.py").read(), critical)
     """
-    if len(code) > _MAX_INPUT_CHARS:
+    if _too_big_for_whole_file(code):
         logger.info(
-            "fix_bugs: large file (%d chars) — switching to surgical mode", len(code)
+            "fix_bugs: %d lines (> %d) — switching to surgical mode",
+            len(code.splitlines()), _MAX_WHOLE_FILE_LINES,
         )
         return fix_bugs_surgical(
             code, bugs, context=context, max_tokens=max(max_tokens, 8192)
         )
+    return _fix_bugs_full(code, bugs, context=context, max_tokens=max_tokens)
 
+
+def _fix_bugs_full(
+    code: str, bugs: list[dict], context: str = "", max_tokens: int = 4096
+) -> str:
+    """Whole-file fix — small files only (see _MAX_WHOLE_FILE_LINES)."""
     fix_list = _bug_lines_prompt(bugs)
     parts = [f"Apply these fixes:\n{fix_list}\n\n"]
     if context:
         parts.append(f"Additional context: {context}\n\n")
     parts.append(f"Code:\n\n{code}")
     max_tokens = _full_file_max_tokens(code, max_tokens)
-    return _strip_fences(
+    return _check_python(_strip_fences(
         delegate_code("".join(parts), system=_FIX_SYSTEM, max_tokens=max_tokens)
-    )
+    ), code, "fix_bugs")
 
 
 def _chunk_summarize(code: str, filename: str, max_tokens: int) -> str:

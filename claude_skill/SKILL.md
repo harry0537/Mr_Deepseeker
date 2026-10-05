@@ -158,7 +158,8 @@ python3 scripts/review.py commit-msg              # reads git diff --staged
 ## Notes
 - API key: `DEEPSEEK_API_KEY` env var or `.env` in repo root
 - `review_all()` runs up to 2 concurrent API calls — allow ~45s for 7 projects
-- Fallback chain: DeepSeek → Ollama (local) → OpenRouter → Groq — one key is enough
+- Fallback chain + output contract: see
+  `references/contract.md` in the skill folder (Ollama removed)
 - Bad JSON from DeepSeek = safe empty result, never crashes
 - Large files (>300 lines) truncated at logical boundary with a warning
 - `summarize_file` is cheap (max_tokens=1024) — use it liberally

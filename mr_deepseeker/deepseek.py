@@ -12,16 +12,17 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from mr_deepseeker.llm_client import delegate_code
+from mr_deepseeker.boilerplate import _strip_fences
+from mr_deepseeker.llm_client import delegate_code, last_engine
 
 logger = logging.getLogger(__name__)
 
-_SKIP_EXTENSIONS = {".pyc", ".log", ".db", ".json", ".txt", ".md", ".env"}
 _SKIP_DIRS = {"__pycache__", ".git", "venv", ".venv", "node_modules"}
 
 _REVIEW_SYSTEM = """You are an expert Python code reviewer for trading systems.
@@ -69,17 +70,20 @@ Output schema:
 }"""
 
 
-def _load_folder(path: str | Path, max_files: int = 20) -> dict[str, str]:
+def _load_folder(
+    path: str | Path, max_files: int = 20
+) -> tuple[dict[str, str], list[str]]:
+    """Return (files, skipped) — skipped names MUST reach the caller's contract."""
     root = Path(path)
     files: dict[str, str] = {}
+    skipped: list[str] = []
     for f in sorted(root.rglob("*.py")):
         if any(part in _SKIP_DIRS for part in f.parts):
             continue
-        if f.suffix in _SKIP_EXTENSIONS:
-            continue
+        rel = str(f.relative_to(root))
         if len(files) >= max_files:
-            logger.warning("Capped at %d files, skipping rest", max_files)
-            break
+            skipped.append(rel)
+            continue
         try:
             content = f.read_text(errors="replace")
             if "�" in content:
@@ -87,10 +91,13 @@ def _load_folder(path: str | Path, max_files: int = 20) -> dict[str, str]:
                     "Non-UTF8 bytes replaced in %s — LLM may see garbled content",
                     f.name,
                 )
-            files[str(f.relative_to(root))] = content
+            files[rel] = content
         except (OSError, PermissionError, UnicodeError) as e:
             logger.warning("Could not read %s: %s", f, e)
-    return files
+            skipped.append(rel)
+    if skipped:
+        logger.warning("%d file(s) NOT sent to the model", len(skipped))
+    return files, skipped
 
 
 _MAX_LINES_PER_FILE = 300
@@ -108,11 +115,16 @@ def _truncate_at_boundary(lines: list[str], limit: int) -> list[str]:
     return lines[:cut]
 
 
-def _build_prompt(files: dict[str, str], context: str = "") -> str:
+def _build_prompt(
+    files: dict[str, str], context: str = ""
+) -> tuple[str, list[str]]:
+    """Return (prompt, truncated_file_names)."""
     parts = []
+    truncated_files: list[str] = []
     if context:
         parts.append(f"CONTEXT: {context}\n")
-    parts.append("RUNTIME: Python 3.11, asyncio\n\nCODE FILES:\n")
+    runtime = f"Python {sys.version_info.major}.{sys.version_info.minor}"
+    parts.append(f"RUNTIME: {runtime}, asyncio\n\nCODE FILES:\n")
     for name, src in files.items():
         lines = src.splitlines()
         if len(lines) > _MAX_LINES_PER_FILE:
@@ -122,8 +134,9 @@ def _build_prompt(files: dict[str, str], context: str = "") -> str:
                 name, len(truncated), len(lines),
             )
             src = "\n".join(truncated) + f"\n# ... truncated ({len(lines)} lines total)"
+            truncated_files.append(f"{name} ({len(truncated)}/{len(lines)} lines)")
         parts.append(f"\n### {name}\n```python\n{src}\n```")
-    return "".join(parts)
+    return "".join(parts), truncated_files
 
 
 def _extract_objects(raw: str) -> list[dict]:
@@ -151,12 +164,9 @@ def _extract_objects(raw: str) -> list[dict]:
 
 
 def _parse_json(raw: str) -> Any:
-    raw = raw.strip()
-    if raw.startswith("```"):
-        raw = raw.split("```", 2)[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-        raw = raw.rsplit("```", 1)[0].strip()
+    # Strip only the wrapping fence — splitting on ``` cuts mid-JSON whenever a
+    # description string quotes a fenced snippet (observed live).
+    raw = _strip_fences(raw).strip()
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
@@ -266,16 +276,38 @@ def review_project(
           "bugs": [{"severity", "file", "line", "category", "description",
                     "remediation"}],
           "reliability_risks": [...],
-          "dead_code_fragments": [...]
+          "dead_code_fragments": [...],
+          "coverage": {"files_sent": [...], "files_skipped": [...],
+                       "files_truncated": [...], "complete": bool},
+          "engine": "host/model that answered"
         }
+
+    `coverage` and `engine` are ground truth from this process — `files_reviewed`
+    is whatever the model claimed. Never report an audit as clean without
+    checking `coverage["complete"]`.
     """
-    files = _load_folder(path, max_files)
+    files, skipped = _load_folder(path, max_files)
     if not files:
         raise ValueError(f"No .py files found in {path}")
     logger.info("Reviewing %d files in %s", len(files), path)
-    prompt = _build_prompt(files, context)
+    prompt, truncated = _build_prompt(files, context)
     raw = delegate_code(prompt, system=_REVIEW_SYSTEM, max_tokens=8192)
-    return _normalise(_parse_json(raw))
+    parsed = _parse_json(raw)
+    # Empty parse == unusable answer, NOT a clean audit. Say so loudly.
+    parse_ok = bool(parsed)
+    result = _normalise(parsed)
+    result["parse_ok"] = parse_ok
+    if not parse_ok:
+        logger.error("Review response was unparseable — result is NOT an audit")
+        result["parse_error"] = raw[:500]
+    result["coverage"] = {
+        "files_sent": sorted(files),
+        "files_skipped": skipped,
+        "files_truncated": truncated,
+        "complete": bool(parse_ok) and not skipped and not truncated,
+    }
+    result["engine"] = last_engine()
+    return result
 
 
 def review_all(
@@ -421,6 +453,7 @@ def trading_brain(state: TradingState) -> dict[str, Any]:
                       "watchdog_note": "", "risk_checks": {}}
         if not isinstance(parsed, dict):
             raise ValueError(f"Unexpected response type: {type(parsed)}")
+        parsed["engine"] = last_engine()
         return parsed
     except Exception as e:
         logger.error(
@@ -433,4 +466,5 @@ def trading_brain(state: TradingState) -> dict[str, Any]:
                 f"DeepSeek returned unparseable response — safe HOLD. Error: {e}"
             ),
             "risk_checks": {},
+            "engine": last_engine(),
         }

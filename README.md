@@ -141,9 +141,14 @@ python3 scripts/review.py json /path/to/project
 One key is enough. Tries providers in order until one succeeds:
 
 1. **DeepSeek** (`DEEPSEEK_API_KEY`) — primary, best for code, cheapest
-2. **Ollama** (local, `OLLAMA_MODEL`) — free if you have Ollama running
-3. **OpenRouter** (`OPENROUTER_API_KEY`) — free tier models
-4. **Groq** (`GROQ_API_KEY`) — fast free tier, rate limited
+2. **OpenRouter** (`OPENROUTER_API_KEY`) — `deepseek/deepseek-chat`, same model
+3. **OpenAI** (`OPENAI_API_KEY`) — `gpt-4o-mini`
+4. **OpenRouter free models** — qwen3-coder / llama-3.3-70b / nemotron
+5. **Groq** (`GROQ_API_KEY`) — fast free tier, rate limited
+
+Fall-through is silent: a revoked DeepSeek key lands you on an 8B model with no
+error. `last_engine()` reports which provider actually answered — see
+[references/contract.md](references/contract.md).
 
 ---
 

@@ -2,8 +2,13 @@
 """
 LLM delegation client — tries providers in priority order until one succeeds.
 
-Priority: DeepSeek(direct) → OpenRouter(deepseek-chat) → OpenAI → OpenRouter(free)
-→ Groq
+Provider chain (SSOT — see ../references/contract.md):
+  DeepSeek(direct) → OpenRouter(deepseek-chat) → OpenAI(gpt-4o-mini)
+  → OpenRouter(free models) → Groq
+
+Which provider actually answered is recorded per-thread; read it with
+`last_engine()` and put it in the task contract. A silent fall to a free 8B
+model must never look like a deepseek-chat answer.
 
 Set API keys in .env or environment variables. DeepSeek is the cheapest
 and most capable for code review tasks. OpenRouter acts as resilient fallback
@@ -17,9 +22,18 @@ import threading
 import time
 import urllib.request
 import urllib.error
+import urllib.parse
 import logging
 
 logger = logging.getLogger(__name__)
+
+# Which provider/model actually served the last call on this thread.
+_LAST = threading.local()
+
+
+def last_engine() -> str:
+    """`host/model` of the last successful call on this thread ("" if none)."""
+    return getattr(_LAST, "engine", "")
 
 # Limit concurrent outbound API calls across threads (review_all runs 3 threads)
 _API_SEMAPHORE = threading.Semaphore(2)
@@ -71,6 +85,8 @@ def _call(url: str, api_key: str, model: str, prompt: str,
             choices = data.get("choices") or []
             if not choices:
                 raise RuntimeError(f"Empty choices in response: {data}")
+            host = urllib.parse.urlsplit(url).hostname or url
+            _LAST.engine = f"{host}/{model}"
             return choices[0]["message"]["content"]
         except urllib.error.HTTPError as e:
             if e.code < 500:
@@ -103,8 +119,9 @@ def deepseek_ask(prompt: str, system: str = "", max_tokens: int = 4096,
 
 def delegate_code(prompt: str, system: str = "", max_tokens: int = 4096) -> str:
     """
-    Send prompt to best available LLM. Chain: DeepSeek → OpenAI → OpenRouter → Groq.
+    Send prompt to the best available LLM (chain in the module docstring).
     Semaphore-gated to max 2 concurrent outbound calls (safe for review_all).
+    Call `last_engine()` afterwards to learn which provider answered.
     Raises RuntimeError if all providers fail.
     """
     with _API_SEMAPHORE:

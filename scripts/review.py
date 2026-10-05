@@ -56,6 +56,20 @@ def print_report(result: dict, label: str = "") -> None:
     print(f"{'='*60}")
     print(f"Files: {', '.join(result.get('files_reviewed', []))}")
 
+    if result.get("parse_ok") is False:
+        print("!! MODEL RESPONSE UNPARSEABLE — this is NOT an audit, 0 bugs is meaningless")
+
+    cov = result.get("coverage") or {}
+    if cov:
+        flag = "COMPLETE" if cov.get("complete") else "PARTIAL — audit is NOT clean"
+        print(f"Coverage: {len(cov.get('files_sent', []))} sent  [{flag}]")
+        if cov.get("files_skipped"):
+            print(f"  NOT SENT: {', '.join(cov['files_skipped'])}")
+        if cov.get("files_truncated"):
+            print(f"  TRUNCATED: {', '.join(cov['files_truncated'])}")
+    if result.get("engine"):
+        print(f"Engine: {result['engine']}")
+
     for sev in ("critical", "high", "medium", "low"):
         group = [b for b in bugs if b.get("severity", "").lower() == sev]
         if not group:
