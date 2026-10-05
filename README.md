@@ -16,6 +16,14 @@ Zero dependencies. Pure Python stdlib.
 
 ## Install
 
+**Easiest: let your AI agent do it.** Works with Claude Code, Codex, and similar agents. Open a session and say:
+
+```
+Fetch https://raw.githubusercontent.com/harry0537/Mr_Deepseeker/main/SETUP_PROMPT.md with curl -fsSL and follow it exactly.
+```
+
+The agent clones the repo, creates `.env` for you to put your key in (you never paste the key into chat), wires up the skill (Claude Code) or adds instruction notes (other agents), and runs a smoke test. See [SETUP_PROMPT.md](SETUP_PROMPT.md).
+
 **Option A: manual**
 
 ```bash
@@ -154,6 +162,7 @@ error. `last_engine()` reports which provider actually answered — see
 
 ```
 SKILL.md                ← the Claude Code skill (repo root = skill folder)
+SETUP_PROMPT.md         ← hand to your AI agent for guided setup
 references/             ← output contract, trading brain notes
 
 mr_deepseeker/          ← the engine underneath
