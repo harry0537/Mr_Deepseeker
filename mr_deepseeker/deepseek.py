@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 _SKIP_DIRS = {"__pycache__", ".git", "venv", ".venv", "node_modules"}
 
-_REVIEW_SYSTEM = """You are an expert Python code reviewer for trading systems.
+_REVIEW_SYSTEM = """You are an expert Python code reviewer.
 Analyse code for: (1) logical errors (2) race conditions (3) unhandled edge cases
 (4) dead code (5) performance risks (6) reliability failures.
 Output ONLY valid JSON. No markdown. No text outside the JSON object.

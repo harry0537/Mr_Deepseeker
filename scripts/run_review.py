@@ -20,7 +20,8 @@ def print_report(result: dict, label: str = ""):
         print(f"\n{'='*60}")
         print(f"DEEPSEEK REVIEW — {label}")
         print(f"{'='*60}")
-        print(f"Total: {s['total_bugs']}  |  critical={s['critical']}  high={s['high']}  medium={s['medium']}  low={s['low']}")
+        print(f"Total: {s['total_bugs']}  |  critical={s['critical']}  "
+              f"high={s['high']}  medium={s['medium']}  low={s['low']}")
         for name, report in result["projects"].items():
             if "error" in report:
                 print(f"\n  [{name}] ERROR: {report['error']}")
@@ -61,16 +62,18 @@ def print_report(result: dict, label: str = ""):
                 print(f"    FIX: {b['remediation']}")
 
     if risks:
-        print(f"\n[RELIABILITY RISKS]")
+        print("\n[RELIABILITY RISKS]")
         for r in risks:
             print(f"  • {r}")
 
     if dead:
-        print(f"\n[DEAD CODE]")
+        print("\n[DEAD CODE]")
         for d in dead:
-            print(f"  {d.get('file','?')} {d.get('lines','?')} — {d.get('function','?')}")
+            print(f"  {d.get('file', '?')} {d.get('lines', '?')} "
+                  f"— {d.get('function', '?')}")
 
-    print(f"\nSummary: {len(bugs)} bugs  ({sum(len(by_sev[s]) for s in ['critical','high'])} critical/high)")
+    crit_high = sum(len(by_sev[s]) for s in ["critical", "high"])
+    print(f"\nSummary: {len(bugs)} bugs  ({crit_high} critical/high)")
 
 
 if __name__ == "__main__":

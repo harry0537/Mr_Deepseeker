@@ -16,24 +16,22 @@ Zero dependencies. Pure Python stdlib.
 
 ## Install
 
-**Option A — manual (one block, copy-paste)**
+**Option A: manual**
 
 ```bash
-git clone https://github.com/harry0537/Mr_Deepseeker.git && \
-cp -r Mr_Deepseeker/claude_skill ~/.claude/skills/Mr_Deepseeker && \
-echo "DEEPSEEK_API_KEY=sk-your-key-here" > ~/.claude/skills/Mr_Deepseeker/.env
+git clone https://github.com/harry0537/Mr_Deepseeker.git ~/.claude/skills/Mr_Deepseeker
+cd ~/.claude/skills/Mr_Deepseeker && cp .env.example .env && chmod 600 .env
 ```
 
-Replace `sk-your-key-here` with your key ([free at platform.deepseek.com](https://platform.deepseek.com)). Restart Claude Code — done.
+Open `~/.claude/skills/Mr_Deepseeker/.env` and replace `paste-your-key-here` with your key ([platform.deepseek.com](https://platform.deepseek.com/api_keys)). Restart Claude Code.
 
-**Option B — guided installer (prompts for your key)**
+**Option B: installer**
 
 ```bash
-git clone https://github.com/harry0537/Mr_Deepseeker.git
-cd Mr_Deepseeker && bash install.sh
+curl -fsSL https://raw.githubusercontent.com/harry0537/Mr_Deepseeker/main/install.sh | bash
 ```
 
-Copies the skill, asks for your API key interactively, writes the `.env`. Restart Claude Code — done.
+Clones (or updates) the skill and creates `.env` for you to edit. Your key never goes through the terminal or chat. Restart Claude Code.
 
 ---
 
@@ -155,9 +153,8 @@ error. `last_engine()` reports which provider actually answered — see
 ## Project structure
 
 ```
-claude_skill/           ← install this as your Claude Code skill
-├── SKILL.md
-└── references/
+SKILL.md                ← the Claude Code skill (repo root = skill folder)
+references/             ← output contract, trading brain notes
 
 mr_deepseeker/          ← the engine underneath
 ├── deepseek.py         # review_project(), review_all()

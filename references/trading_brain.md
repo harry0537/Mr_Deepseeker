@@ -31,8 +31,8 @@ except Exception:
 # Watchdog fallback
 try:
     import os
-    wstate = json.load(open("/home/aibot/claude/watchdog/state.json")) \
-        if os.path.exists("/home/aibot/claude/watchdog/state.json") \
+    wstate = json.load(open("/path/to/watchdog/state.json")) \
+        if os.path.exists("/path/to/watchdog/state.json") \
         else {"halted": False, "reason": None}
 except Exception:
     wstate = {"halted": False, "reason": None}
@@ -42,11 +42,11 @@ If `trading_brain()` returns unparseable JSON, it now auto-returns `HOLD` for al
 
 ## Building TradingState
 
-Pull live data from these sources in `/home/aibot/claude/`:
+Example wiring for a bot stack with a `shared/` package (adapt to your own):
 
 ```python
 import sys, datetime
-sys.path.insert(0, "/home/aibot/claude")
+sys.path.insert(0, "/path/to/your/bot/repo")
 
 from shared.deepseek import trading_brain, TradingState, BotStatus, BOTS
 from shared.regime_builder import get_regime, RegimeInput
@@ -87,8 +87,8 @@ exposure = {"total": exp.total, "bot_breakdown": exp.by_bot}
 
 # 4. Watchdog
 import json
-wstate = json.load(open("/home/aibot/claude/watchdog/state.json")) \
-    if os.path.exists("/home/aibot/claude/watchdog/state.json") \
+wstate = json.load(open("/path/to/watchdog/state.json")) \
+    if os.path.exists("/path/to/watchdog/state.json") \
     else {"halted": False, "reason": None}
 
 # 5. Assemble

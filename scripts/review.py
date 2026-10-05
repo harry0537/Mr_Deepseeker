@@ -19,7 +19,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from mr_deepseeker.env import load_env
 load_env()
-from mr_deepseeker import review_project, review_all, summarize_file, write_commit_message
+from mr_deepseeker import (  # noqa: E402 — load_env() must run first
+    review_project, review_all, summarize_file, write_commit_message,
+)
 
 
 def print_report(result: dict, label: str = "") -> None:
@@ -29,9 +31,10 @@ def print_report(result: dict, label: str = "") -> None:
     if "summary" in result and "projects" in result:
         s = result["summary"]
         print(f"\n{'='*60}")
-        print(f"MR_DEEPSEEKER REVIEW — ALL PROJECTS")
+        print("MR_DEEPSEEKER REVIEW — ALL PROJECTS")
         print(f"{'='*60}")
-        print(f"Total: {s['total_bugs']}  |  critical={s['critical']}  high={s['high']}  medium={s['medium']}  low={s['low']}")
+        print(f"Total: {s['total_bugs']}  |  critical={s['critical']}  "
+              f"high={s['high']}  medium={s['medium']}  low={s['low']}")
         for name, report in result["projects"].items():
             if "error" in report:
                 print(f"\n  [{name}] ERROR: {report['error']}")
@@ -57,7 +60,8 @@ def print_report(result: dict, label: str = "") -> None:
     print(f"Files: {', '.join(result.get('files_reviewed', []))}")
 
     if result.get("parse_ok") is False:
-        print("!! MODEL RESPONSE UNPARSEABLE — this is NOT an audit, 0 bugs is meaningless")
+        print("!! MODEL RESPONSE UNPARSEABLE — this is NOT an audit, "
+              "0 bugs is meaningless")
 
     cov = result.get("coverage") or {}
     if cov:
@@ -83,16 +87,19 @@ def print_report(result: dict, label: str = "") -> None:
                 print(f"    FIX: {b['remediation']}")
 
     if risks:
-        print(f"\n[RELIABILITY RISKS]")
+        print("\n[RELIABILITY RISKS]")
         for r in risks:
             print(f"  • {r}")
 
     if dead:
-        print(f"\n[DEAD CODE]")
+        print("\n[DEAD CODE]")
         for d in dead:
-            print(f"  {d.get('file','?')} {d.get('lines','?')} — {d.get('function','?')}")
+            print(f"  {d.get('file', '?')} {d.get('lines', '?')} "
+                  f"— {d.get('function', '?')}")
 
-    crit_high = sum(1 for b in bugs if b.get("severity","").lower() in ("critical","high"))
+    crit_high = sum(
+        1 for b in bugs if b.get("severity", "").lower() in ("critical", "high")
+    )
     print(f"\nSummary: {len(bugs)} bugs  ({crit_high} critical/high)")
 
 
