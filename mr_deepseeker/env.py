@@ -4,6 +4,9 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+# Template values from .env.example — treated as "no key"
+_PLACEHOLDERS = {"paste-your-key-here", "sk-your-key-here"}
+
 # Canonical key files (chmod 600) — fallback when a key isn't in .env/environ
 _KEY_FILES = {
     "DEEPSEEK_API_KEY": "~/.deepseek_key",
@@ -36,7 +39,10 @@ def load_env(path: Path | None = None) -> None:
                     ".env line %d skipped (space in key %r): %r", lineno, k, raw
                 )
                 continue
-            os.environ.setdefault(k, v)
+            if v in _PLACEHOLDERS:
+                continue
+            if not os.environ.get(k):
+                os.environ[k] = v
 
     for var, keyfile in _KEY_FILES.items():
         if os.environ.get(var):

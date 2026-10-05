@@ -181,4 +181,9 @@ def _delegate_code_inner(prompt: str, system: str, max_tokens: int) -> str:
                 logger.warning("Groq %s failed: %s", model, e)
                 last_exc = e
 
+    if last_exc is None:
+        raise RuntimeError(
+            "No API key set. Put your key in the skill's .env "
+            "(DEEPSEEK_API_KEY=...) or ~/.deepseek_key"
+        )
     raise RuntimeError(f"All LLM backends failed. Last error: {last_exc}")
